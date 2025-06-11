@@ -82,7 +82,7 @@ PROMPT_AUDIO = "Fulfill the request in this audio. If it's a question, answer it
 
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-BOTTOM_BUTTON_PACKET = bytes.fromhex('00110034023af858c316cb456191e7f1ad2df8725f')
+# The bottom button packet is no longer used, as we rely on the system shortcut.
 
 
 class PebbleGeminiBridge:
@@ -123,40 +123,9 @@ class PebbleGeminiBridge:
         if packet == MIDDLE_BUTTON_PACKET:
             print("\n>>> Middle button press detected! Starting image analysis...")
             threading.Thread(target=self._capture_and_analyze_image).start()
-        elif packet == BOTTOM_BUTTON_PACKET:
-            print("\n>>> Bottom button press detected! Sending voice prompt to watch...")
-            # We must send the notification in a new thread to avoid deadlocking the event loop.
-            threading.Thread(target=self._send_voice_prompt).start()
+        # The bottom button no longer has a function in this script.
+        # Voice is now triggered by the system-level shortcut on the watch.
             
-    def _send_voice_prompt(self):
-        """
-        Sends a notification with a "Reply with Voice" action to the watch.
-        This is the new trigger for the voice workflow.
-        """
-        try:
-            pin_id = str(uuid.uuid4())
-            action = TimelineAction(action_id=0, type=TimelineAction.Type.Response, attributes=[
-                TimelineAttribute(attribute_id=1, content="Reply".encode('utf-8')),
-            ])
-            pin = TimelineItem(
-                item_id=pin_id,
-                parent_id=pin_id,
-                timestamp=int(time.time()),
-                duration=0,
-                type=TimelineItem.Type.Notification,
-                flags=0,
-                layout=0x01,
-                attributes=[
-                    TimelineAttribute(attribute_id=1, content="Voice Command".encode('utf-8')),
-                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
-                ],
-                actions=[action]
-            )
-            self._pebble.send_packet(pin)
-            print("Voice prompt sent to watch. Please open it and select 'Reply'.")
-        except Exception as e:
-            print(f"Failed to send voice prompt: {type(e).__name__}: {e}")
-
     def _handle_audio_data(self, data):
         """
         Receives audio chunks from the watch and writes them to a file.
@@ -169,7 +138,7 @@ class PebbleGeminiBridge:
         if self._audio_file:
             self._audio_file.write(data)
 
-    def _stop_recording_and_analyze(self):
+    def _stop_recording_and_analyze(self, *args, **kwargs):
         """
         Triggered when the watch signals the end of the voice session.
         """
@@ -249,7 +218,9 @@ class PebbleGeminiBridge:
     def run(self):
         print("Registering raw packet handler...")
         self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
-        print("\nReady. Middle button for image, Bottom button to toggle voice.")
+        print("\nReady.")
+        print("- Press Middle Button for Image Analysis.")
+        print("- Use Pebble Shortcut (Hold Back, Press Up) for Voice Analysis.")
         self._pebble.run_sync()
 
     def shutdown(self):
