@@ -59,6 +59,7 @@ try:
     from libpebble2.communication.transports.serial import SerialTransport
     from libpebble2.services.notifications import Notifications
     from libpebble2.services.voice import VoiceService
+    from libpebble2.protocol.timeline import TimelineItem, TimelineAttribute, TimelineAction
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
 
@@ -128,12 +129,35 @@ class PebbleGeminiBridge:
             
     def _send_voice_prompt(self):
         """
-        Sends a simple notification to the watch, instructing the user
-        to manually activate the dictation UI.
+        Sends a notification with a "Reply with Voice" action to the watch.
+        This is the new trigger for the voice workflow.
         """
         try:
-            self._notifications.send_notification("Voice Command", "Ready for voice. Press and hold the BACK button.", "Raspberry Pi")
-            print("Voice prompt sent to watch. Please press and hold the BACK button to start dictation.")
+            # Construct a timeline pin with a voice reply action
+            pin_id = str(uuid.uuid4())
+            # An action needs its own attributes to define its label.
+            action = TimelineAction(action_id=0, type=TimelineAction.Type.Response, attributes=[
+                TimelineAttribute(attribute_id=1, content="Reply".encode('utf-8')),
+            ])
+            
+            # The debug output has shown us the correct names.
+            # - The parameter is 'type'.
+            pin = TimelineItem(
+                item_id=pin_id,
+                parent_id=pin_id,
+                timestamp=int(time.time()),
+                duration=0,
+                type=TimelineItem.Type.Notification,
+                flags=0,
+                layout=0x01,  # Generic Notification Layout
+                attributes=[
+                    TimelineAttribute(attribute_id=1, content="Voice Command".encode('utf-8')),
+                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
+                ],
+                actions=[action]
+            )
+            self._pebble.send_packet(pin)
+            print("Voice prompt sent to watch. Please open it and select 'Reply'.")
         except Exception as e:
             print(f"Failed to send voice prompt: {type(e).__name__}: {e}")
 
@@ -229,7 +253,7 @@ class PebbleGeminiBridge:
     def run(self):
         print("Registering raw packet handler...")
         self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
-        print("\nReady. Middle button for image. Bottom button for voice prompt.")
+        print("\nReady. Middle button for image, Bottom button to toggle voice.")
         self._pebble.run_sync()
 
     def shutdown(self):
