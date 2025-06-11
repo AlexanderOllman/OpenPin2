@@ -135,12 +135,18 @@ class PebbleGeminiController:
         print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
+        # Pre-fetch watch info to prevent timeouts inside event handlers.
+        print("Fetching watch info...")
+        self._pebble.fetch_watch_info()
+        print("Watch info fetched.")
         self._notifications = Notifications(self._pebble)
         self._voice_service = VoiceService(self._pebble)
         print("Pebble connected successfully!")
 
     def _raw_packet_handler(self, packet):
         """ Handles the middle button press to send a reply-able notification. """
+        # Raw packet debugging, as requested.
+        print(f"DEBUG: Received packet: {packet.hex()}")
         if packet == MIDDLE_BUTTON_PACKET:
             print("\n>>> Middle button press detected! Sending voice prompt notification...")
             # This notification prompts the user to start a voice session.
