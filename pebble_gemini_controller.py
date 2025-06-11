@@ -140,9 +140,17 @@ class PebbleGeminiController:
         # We listen directly for audio stream packets, bypassing the VoiceService.
         self._pebble.register_endpoint(AudioStream, self._handle_audio_stream)
         print("Pebble connected successfully!")
+        
+        # Proactively fetch watch info to prevent timeouts later.
+        print("Fetching watch info...")
+        self._pebble.fetch_watch_info()
+        print(f"Connected to a {self._pebble.watch_info.running.model_name} running firmware {self._pebble.firmware_version}")
 
     def _raw_packet_handler(self, packet):
         """ Handles the middle button press to toggle recording. """
+        # --- Restore raw packet debugging ---
+        print(f"DEBUG: Received packet: {packet.hex()}")
+        
         if packet == MIDDLE_BUTTON_PACKET:
             if not self._is_recording:
                 self.start_recording()
@@ -150,7 +158,7 @@ class PebbleGeminiController:
                 self.stop_recording()
 
     def start_recording(self):
-        """ Begins a voice dictation session by telling the watch we're ready. """
+        """ Begins a voice dictation session. """
         print("\n>>> Start recording triggered.")
         self._is_recording = True
         self._audio_buffer.clear()
