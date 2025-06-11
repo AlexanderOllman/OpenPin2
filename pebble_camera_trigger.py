@@ -133,14 +133,9 @@ class PebbleGeminiBridge:
         This is the new trigger for the voice workflow.
         """
         try:
-            # --- DEBUGGING: Print available action types ---
-            print("\n--- DEBUG: Available attributes on TimelineAction.Type ---")
-            print(dir(TimelineAction.Type))
-            print("----------------------------------------------------------\n")
-
             # Construct a timeline pin with a voice reply action
             pin_id = str(uuid.uuid4())
-            action = TimelineAction(action_id=0, action_type=TimelineAction.Type.VOICE_REPLY)
+            action = TimelineAction(action_id=0, action_type=TimelineAction.Type.Response)
             
             pin = TimelineItem(
                 item_id=pin_id,
@@ -158,9 +153,6 @@ class PebbleGeminiBridge:
             )
             self._pebble.send_packet(pin)
             print("Voice prompt sent to watch. Please open it and select 'Reply with Voice'.")
-        except AttributeError as e:
-            print(f"Caught expected error: {e}")
-            print("Please provide the debug output above so the script can be corrected.")
         except Exception as e:
             print(f"Failed to send voice prompt: {type(e).__name__}: {e}")
 
