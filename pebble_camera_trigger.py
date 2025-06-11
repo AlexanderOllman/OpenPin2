@@ -80,7 +80,7 @@ PROMPT_AUDIO = "Fulfill the request in this audio. If it's a question, answer it
 
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-BOTTOM_BUTTON_PACKET = b'\x00\x11\x004\x01y\xc7kHa\x11N\x80\x8d\xeb1\x19\xee\xbe\xf3\xde'
+BOTTOM_BUTTON_PACKET = bytes.fromhex('00110034023af858c316cb456191e7f1ad2df8725f')
 
 
 class PebbleGeminiBridge:
