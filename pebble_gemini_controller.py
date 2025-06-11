@@ -159,8 +159,19 @@ class PebbleGeminiController:
         self._audio_data_handle = self._voice_service.register_handler("audio_data", self._handle_audio_data)
         self._session_end_handle = self._voice_service.register_handler("session_end", self._handle_session_end)
         
-        self._voice_service.start_voice_session()
-        self._notifications.send_notification("Gemini Voice", "Recording...", "Raspberry Pi")
+        # --- DEBUGGING: Print available methods on VoiceService ---
+        print("\n--- DEBUG: Available attributes on VoiceService object ---")
+        print(dir(self._voice_service))
+        print("----------------------------------------------------------\n")
+
+        try:
+            self._voice_service.start_voice_session()
+            self._notifications.send_notification("Gemini Voice", "Recording...", "Raspberry Pi")
+        except AttributeError as e:
+            print(f"Caught expected error: {e}")
+            print("Please provide the debug output above so the script can be corrected.")
+            # Since recording failed to start, reset the state.
+            self._is_recording = False
 
     def stop_recording(self):
         """ Stops a voice dictation session and starts analysis. """
