@@ -135,11 +135,11 @@ class PebbleGeminiBridge:
         try:
             # Construct a timeline pin with a voice reply action
             pin_id = str(uuid.uuid4())
-            action = TimelineAction(action_id=0, type=TimelineAction.Type.Response)
+            # The action itself can have attributes. Provide an empty list to prevent errors.
+            action = TimelineAction(action_id=0, type=TimelineAction.Type.Response, attributes=[])
             
             # The debug output has shown us the correct names.
             # - The parameter is 'type'.
-            # - The value is 'Notification' (with a capital N).
             pin = TimelineItem(
                 item_id=pin_id,
                 parent_id=pin_id,
@@ -149,8 +149,8 @@ class PebbleGeminiBridge:
                 flags=0,
                 layout=0x01,  # Generic Notification Layout
                 attributes=[
-                    TimelineAttribute(attribute_id=3, content="Voice Command".encode('utf-8')),
-                    TimelineAttribute(attribute_id=4, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
+                    TimelineAttribute(attribute_id=1, content="Voice Command".encode('utf-8')),
+                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
                 ],
                 actions=[action]
             )
