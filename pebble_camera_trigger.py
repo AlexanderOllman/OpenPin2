@@ -80,6 +80,7 @@ except ImportError:
 try:
     from libpebble2.communication import PebbleConnection
     from libpebble2.communication.transports.serial import SerialTransport
+    from libpebble2.protocol.buttons import ButtonPress, ButtonRelease
     from libpebble2.services.notifications import Notifications
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
@@ -200,32 +201,81 @@ class PebbleCameraTrigger:
         print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
+        # The Notifications service is not strictly needed for the trigger,
+        # but is useful for sending status updates back to the watch.
         self._notifications = Notifications(self._pebble)
         print("Pebble connected successfully!")
 
-    def _debug_handler(self, packet):
+    def _button_handler(self, packet):
         """
-        Generic raw handler to print details of any packet received.
-        This is used to identify the correct packet type for button presses.
+        Handles button press events from the Pebble.
+        Triggers on a press of the SELECT (middle) button.
         """
-        print("\n--- DEBUG: Raw Packet Received ---")
-        print(f"  Packet Type: {type(packet)}")
-        print(f"  Packet Content: {packet}")
-        print("----------------------------------\n")
-        # After running and pressing a button, look for a packet that seems
-        # to correspond to the button press. Then we can write a specific
-        # handler for it.
+        if isinstance(packet, ButtonPress) and packet.data.button == ButtonPress.Button.SELECT:
+            print("\n>>> Select button pressed! Starting capture and analysis...")
+            # Run the main logic in a separate thread to avoid blocking the
+            # Pebble's event loop. This keeps the watch responsive.
+            threading.Thread(target=self._capture_and_analyze).start()
+
+    def _capture_and_analyze(self):
+        """
+        The core logic: notifies the watch, captures, analyzes, and cleans up.
+        """
+        try:
+            # --- Notify Pebble that the action has started ---
+            self._notifications.send_notification("Gemini Trigger", "Capturing image...", "Raspberry Pi")
+
+            # --- Camera Capture ---
+            print(f"Capturing image to {IMAGE_FILE_PATH}...")
+            self._picam2.capture_file(IMAGE_FILE_PATH)
+            print("Capture complete.")
+
+            # --- Gemini API Interaction ---
+            print(f"Uploading {IMAGE_FILE_PATH} to the Gemini API...")
+            image_file_resource = self._gemini_client.files.upload(file=IMAGE_FILE_PATH)
+
+            google_search_tool = Tool(google_search=GoogleSearch())
+
+            print(f"Asking Gemini: '{PROMPT}'")
+            response = self._gemini_client.models.generate_content(
+                model=MODEL_ID,
+                contents=[image_file_resource, PROMPT],
+                config=GenerateContentConfig(tools=[google_search_tool], response_modalities=["TEXT"])
+            )
+
+            # --- Print and Send Response ---
+            if response.candidates:
+                result_text = response.candidates[0].content.parts[0].text
+                print("\n--- Gemini's Response ---")
+                print(result_text)
+                print("-------------------------\n")
+                # Send the final result back to the watch
+                self._notifications.send_notification("Gemini Result", result_text, "Raspberry Pi")
+            else:
+                print("No content generated.")
+                if response.prompt_feedback:
+                    print(f"Prompt Feedback: {response.prompt_feedback}")
+                self._notifications.send_notification("Gemini Result", "Error: No content generated.", "Raspberry Pi")
+
+        except Exception as e:
+            print(f"An error occurred during capture or analysis: {e}")
+            try:
+                self._notifications.send_notification("Gemini Result", f"Error: {e}", "Raspberry Pi")
+            except Exception as notif_e:
+                print(f"Failed to send error notification to Pebble: {notif_e}")
+
+        finally:
+            # --- File Cleanup ---
+            if os.path.exists(IMAGE_FILE_PATH):
+                os.remove(IMAGE_FILE_PATH)
+                print(f"Cleaned up temporary file: {IMAGE_FILE_PATH}")
 
     def run(self):
         """
-        Registers a raw event handler for debugging and starts the event loop.
+        Registers the event handler and starts the main event loop.
         """
-        print("Registering a raw handler to identify the button press event...")
-        self._pebble.register_raw_inbound_handler(self._debug_handler)
-
-        print("\nReady. Press the SELECT (middle) button on your Pebble.")
-        print("Watch the terminal for 'DEBUG: Raw Packet Received' output.")
-        
+        self._pebble.register_endpoint(ButtonPress, self._button_handler)
+        print("Ready. Press the SELECT (middle) button on your Pebble to trigger an image capture.")
         self._pebble.run_sync()
 
     def shutdown(self):
@@ -245,14 +295,9 @@ def main():
         trigger.connect()
         trigger.run()
     except Exception as e:
-        # Check if the error is due to the rfcomm port not existing, which
-        # is the most common first-time setup issue.
-        if "No such file or directory" in str(e):
-            discover_and_setup()
-        else:
-            print(f"\nA critical error occurred: {e}")
-            print("If this is your first time, the Pebble may not be paired correctly.")
-            print("Please restart the script to run the interactive setup process if needed.")
+        print(f"\nA critical error occurred: {e}")
+        print("Please ensure the Pebble is paired and bound to rfcomm0.")
+        print("See the setup instructions at the top of this script.")
     finally:
         trigger.shutdown()
 
