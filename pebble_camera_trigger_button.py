@@ -65,7 +65,6 @@ import threading
 from functools import partial
 import subprocess
 import re
-import shutil
 
 try:
     from picamera2 import Picamera2
@@ -82,7 +81,6 @@ try:
     from libpebble2.communication import PebbleConnection
     from libpebble2.communication.transports.serial import SerialTransport
     from libpebble2.services.notifications import Notifications
-    from libpebble2.services.voice import VoiceService
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
 
@@ -100,7 +98,6 @@ PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 
 # This is the raw byte sequence discovered to correspond to the middle button.
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-BOTTOM_BUTTON_PACKET = b'\x00\x11\x0034\x01y\xc7kH`\x11N\x80\x8d\xeb1\x19\xee\xbe\xf3>'
 
 
 def discover_and_setup():
@@ -189,17 +186,11 @@ class PebbleCameraTrigger:
         self._notifications = None
         self._gemini_client = genai.Client(api_key=API_KEY)
         self._picam2 = Picamera2()
-        self._voice_service = None
-        self._is_recording = False
 
     def connect(self):
         """
         Initializes the camera and connects to the Pebble watch.
         """
-        # --- Check for FFMPEG ---
-        if not shutil.which("ffmpeg"):
-            sys.exit("\nError: ffmpeg is not installed. Please run 'sudo apt install ffmpeg' and try again.")
-            
         # --- Camera Setup ---
         print("Initializing camera...")
         config = self._picam2.create_still_configuration(main={"size": (1280, 720)})
@@ -213,8 +204,6 @@ class PebbleCameraTrigger:
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
         self._notifications = Notifications(self._pebble)
-        # Initialize the voice service to be ready
-        self._voice_service = VoiceService(self._pebble)
         print("Pebble connected successfully!")
 
     def _debug_handler(self, packet):
@@ -232,44 +221,21 @@ class PebbleCameraTrigger:
 
     def _raw_packet_handler(self, packet):
         """
-        Handles raw packets from the Pebble and routes them to the
-        correct handler based on the packet content.
+        Handles raw packets from the Pebble and triggers the capture if it
+        matches the known sequence for the middle button.
         """
         # We can leave this print statement here for debugging other buttons.
-        if self._is_recording:
-            print(f"DEBUG (RECORDING): Received packet: {packet.hex('|')}")
+        print(f"DEBUG: Received packet: {packet.hex()}")
 
-        if packet == BOTTOM_BUTTON_PACKET:
-            self._handle_voice_trigger()
-        elif packet == MIDDLE_BUTTON_PACKET:
-            print("\n>>> Middle button press detected! Starting image-only analysis...")
+        if packet == MIDDLE_BUTTON_PACKET:
+            print("\n>>> Middle button press detected! Starting capture and analysis...")
             # Run the main logic in a separate thread to avoid blocking the
             # Pebble's event loop. This keeps the watch responsive.
-            threading.Thread(target=self._capture_and_analyze_with_text).start()
+            threading.Thread(target=self._capture_and_analyze).start()
 
-    def _handle_voice_trigger(self):
+    def _capture_and_analyze(self):
         """
-        Toggles voice recording on/off. This is a diagnostic version.
-        """
-        if not self._is_recording:
-            # --- START RECORDING ---
-            self._is_recording = True
-            print("\n>>> BOTTOM BUTTON: STARTING voice recording session...")
-            self._notifications.send_notification("Voice Capture", "Recording... Press bottom button again to stop.", "Raspberry Pi")
-            self._voice_service.start_transcription()
-
-        else:
-            # --- STOP RECORDING ---
-            self._is_recording = False
-            print("\n>>> BOTTOM BUTTON: STOPPING voice recording session...")
-            print("Please copy the 'DEBUG (RECORDING)' lines from the terminal.")
-            self._notifications.send_notification("Voice Capture", "Stopped. Check terminal for packet data.", "Raspberry Pi")
-            # We don't have a formal stop method, but this will end the session.
-            # In a real implementation, we would process the saved audio here.
-
-    def _capture_and_analyze_with_text(self):
-        """
-        The core logic for image-only analysis, triggered by the middle button.
+        The core logic: notifies the watch, captures, analyzes, and cleans up.
         """
         try:
             # --- Notify Pebble that the action has started ---
@@ -327,7 +293,7 @@ class PebbleCameraTrigger:
         print("Registering raw packet handler...")
         self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
 
-        print("\nReady. Press middle button for image analysis, or bottom button to test voice capture.")
+        print("\nReady. Press the SELECT (middle) button on your Pebble to trigger the Gemini analysis.")
         
         self._pebble.run_sync()
 
