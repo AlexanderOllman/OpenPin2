@@ -98,9 +98,9 @@ PROMPT = "What is in this image? Be concise."
 # This is the serial port created by the `rfcomm bind` command.
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 
-# This is the raw byte sequence discovered to correspond to the middle button.
+# --- Discovered Button Packets ---
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-BOTTOM_BUTTON_PACKET = b'\x00\x11\x0034\x01y\xc7kH`\x11N\x80\x8d\xeb1\x19\xee\xbe\xf3>'
+BOTTOM_BUTTON_PACKET = b'\x00\x11\x00\x34\x01\x79\xc7\x6b\x48\x61\x11\x4e\x80\x8d\xeb\x31\x19\xee\xbe\xf3\x3e'
 
 
 def discover_and_setup():
