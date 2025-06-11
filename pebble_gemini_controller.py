@@ -135,13 +135,16 @@ class PebbleGeminiController:
         print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
-        # Pre-fetch watch info to prevent timeouts inside event handlers.
-        print("Fetching watch info...")
-        self._pebble.fetch_watch_info()
-        print("Watch info fetched.")
         self._notifications = Notifications(self._pebble)
         self._voice_service = VoiceService(self._pebble)
         print("Pebble connected successfully!")
+
+    def _send_prompt_notification(self):
+        """ Sends the voice prompt notification in a separate thread to avoid deadlocks. """
+        try:
+            self._notifications.send_notification("Gemini Voice Prompt", "Reply with voice to dictate your prompt.", "Raspberry Pi")
+        except Exception as e:
+            print(f"Error sending notification: {e}")
 
     def _raw_packet_handler(self, packet):
         """ Handles the middle button press to send a reply-able notification. """
@@ -149,8 +152,8 @@ class PebbleGeminiController:
         print(f"DEBUG: Received packet: {packet.hex()}")
         if packet == MIDDLE_BUTTON_PACKET:
             print("\n>>> Middle button press detected! Sending voice prompt notification...")
-            # This notification prompts the user to start a voice session.
-            self._notifications.send_notification("Gemini Voice Prompt", "Reply with voice to dictate your prompt.", "Raspberry Pi")
+            # Run the notification in a thread to avoid blocking the event loop.
+            threading.Thread(target=self._send_prompt_notification).start()
 
     def _on_session_setup(self, app_uuid, encoder_info):
         """
