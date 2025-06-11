@@ -82,7 +82,7 @@ PROMPT_AUDIO = "Fulfill the request in this audio. If it's a question, answer it
 
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-# The bottom button packet is no longer used, as we rely on the system shortcut.
+BOTTOM_BUTTON_PACKET = bytes.fromhex('00110034023af858c316cb456191e7f1ad2df8725f')
 
 
 class PebbleGeminiBridge:
@@ -121,35 +121,49 @@ class PebbleGeminiBridge:
     def _raw_packet_handler(self, packet):
         print(f"DEBUG: Received packet: {packet.hex()}")
         if packet == MIDDLE_BUTTON_PACKET:
-            print("\n>>> Middle button press detected! Starting image analysis...")
-            threading.Thread(target=self._capture_and_analyze_image).start()
-        # The bottom button no longer has a function in this script.
-        # Voice is now triggered by the system-level shortcut on the watch.
+            print("\n>>> Middle button press detected! Starting voice recording...")
+            self._start_recording()
+        elif packet == BOTTOM_BUTTON_PACKET:
+            print("\n>>> Bottom button press detected! Stopping voice recording...")
+            self._stop_recording_and_analyze()
+
+    def _start_recording(self):
+        """
+        Starts the voice recording session. This should be triggered by the
+        Pebble's own dictation UI, which our script can't start directly.
+        Instead, we'll just prepare to receive audio.
+        """
+        if self._is_recording:
+            print("Already recording.")
+            return
+
+        print("Ready to record. Open dictation on your watch (e.g. via a notification).")
+        self._is_recording = True
+        self._audio_file = open(AUDIO_FILE_PATH_RAW, 'wb')
+        self._notifications.send_notification("Voice Command", "Recording has started.", "Raspberry Pi")
             
     def _handle_audio_data(self, data):
         """
         Receives audio chunks from the watch and writes them to a file.
         """
-        if not self._is_recording:
-            print("Audio stream started. Recording...")
-            self._is_recording = True
-            self._audio_file = open(AUDIO_FILE_PATH_RAW, 'wb')
-
-        if self._audio_file:
+        if self._is_recording and self._audio_file:
             self._audio_file.write(data)
 
-    def _stop_recording_and_analyze(self, *args, **kwargs):
+    def _stop_recording_and_analyze(self):
         """
-        Triggered when the watch signals the end of the voice session.
+        Triggered when the bottom button is pressed.
         """
         if not self._is_recording:
-            return # Avoids triggering on session setup failures
+            print("Not currently recording.")
+            return
 
-        print("Voice session ended. Processing audio...")
+        print("Stopping voice recording and processing audio...")
         self._is_recording = False
+        
         if self._audio_file:
             self._audio_file.close()
         
+        self._notifications.send_notification("Voice Command", "Processing audio...", "Raspberry Pi")
         threading.Thread(target=self._process_audio_with_gemini).start()
 
     def _process_audio_with_gemini(self):
@@ -218,9 +232,7 @@ class PebbleGeminiBridge:
     def run(self):
         print("Registering raw packet handler...")
         self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
-        print("\nReady.")
-        print("- Press Middle Button for Image Analysis.")
-        print("- Use Pebble Shortcut (Hold Back, Press Up) for Voice Analysis.")
+        print("\nReady. Press Middle button to start recording, Bottom button to stop.")
         self._pebble.run_sync()
 
     def shutdown(self):
