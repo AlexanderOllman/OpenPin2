@@ -60,6 +60,11 @@ MODEL_ID = "gemini-2.0-flash"
 MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 
+# Define the endpoint and the specific data payload for the middle button press.
+# This was determined by sniffing the raw Bluetooth traffic from the watch.
+BUTTON_ENDPOINT = 0x1a7a
+MIDDLE_BUTTON_PAYLOAD = b'\x01\x01'
+
 
 def discover_and_setup():
     """
@@ -130,6 +135,10 @@ class PebbleGeminiController:
         self._voice_service = None
         self._gemini_client = genai.Client(api_key=API_KEY)
         self._audio_buffer = bytearray()
+        self._is_voice_session_active = False
+
+        # Register a handler for the specific endpoint associated with button presses.
+        self._pebble.pebble.register_handler(BUTTON_ENDPOINT, self._button_press_handler)
 
     def connect(self):
         """ Initializes the connection to the Pebble watch. """
@@ -139,6 +148,19 @@ class PebbleGeminiController:
         self._notifications = Notifications(self._pebble)
         self._voice_service = VoiceService(self._pebble)
         print("Pebble connected successfully!")
+
+    def _button_press_handler(self, data):
+        """
+        Handles packets from the button endpoint (0x1a7a).
+        This handler is invoked by libpebble2 whenever a packet for this endpoint arrives.
+        """
+        print(f"DEBUG: Received packet on button endpoint. Data: {data.hex()}")
+        # The middle button press sends a specific 2-byte payload.
+        # The endpoint also sends large data dumps at the end of a voice session, which we ignore.
+        if data == MIDDLE_BUTTON_PAYLOAD:
+            print("\n>>> Middle button press detected! Sending voice prompt notification...")
+            # Run the notification in a thread to avoid blocking the event loop.
+            threading.Thread(target=self._send_prompt_notification).start()
 
     def _send_prompt_notification(self):
         """ Sends the voice prompt notification in a separate thread to avoid deadlocks. """
@@ -162,19 +184,6 @@ class PebbleGeminiController:
         except Exception as e:
             print(f"An unexpected error occurred sending notification:")
             traceback.print_exc()
-
-    def _raw_packet_handler(self, packet):
-        """ Handles all raw packets, filtering for the middle button press. """
-        # We only care about the very small, specific packet for the button.
-        # Ignore any large, complex packets to avoid overwhelming the library.
-        if len(packet) > 30:
-            return
-
-        print(f"DEBUG: Received small packet: {packet.hex()}")
-        if packet == MIDDLE_BUTTON_PACKET:
-            print("\n>>> Middle button press detected! Sending voice prompt notification...")
-            # Run the notification in a thread to avoid blocking the event loop.
-            threading.Thread(target=self._send_prompt_notification).start()
 
     def _on_session_setup(self, app_uuid, encoder_info):
         """
@@ -253,7 +262,7 @@ class PebbleGeminiController:
         print("Registering voice session and button press handlers...")
         # This is the main trigger for our entire workflow.
         self._voice_service.register_handler("session_setup", self._on_session_setup)
-        self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
+        self._pebble.pebble.register_handler(BUTTON_ENDPOINT, self._button_press_handler)
 
         print("\nReady. Press the SELECT (middle) button on your Pebble to receive a voice prompt.")
         
