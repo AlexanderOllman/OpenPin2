@@ -203,88 +203,39 @@ class PebbleCameraTrigger:
         self._notifications = Notifications(self._pebble)
         print("Pebble connected successfully!")
 
-
-    def _button_handler(self, event):
+    def _debug_handler(self, packet):
         """
-        Handles button press events from the Pebble.
-        Triggers on the SELECT (middle) button.
+        Generic raw handler to print details of any packet received.
+        This is used to identify the correct packet type for button presses.
         """
-        if event.button == 'SELECT':
-            print("\n>>> Select button pressed! Starting capture and analysis...")
-            # Run the main logic in a separate thread to avoid blocking the
-            # Pebble's event loop. This keeps the watch responsive.
-            threading.Thread(target=self._capture_and_analyze).start()
-
-    def _capture_and_analyze(self):
-        """
-        The core logic: notifies the watch, captures, analyzes, and cleans up.
-        """
-        try:
-            # --- Notify Pebble that the action has started ---
-            self._notifications.send_notification("Gemini Trigger", "Capturing image...", "Raspberry Pi")
-
-            # --- Camera Capture ---
-            print(f"Capturing image to {IMAGE_FILE_PATH}...")
-            self._picam2.capture_file(IMAGE_FILE_PATH)
-            print("Capture complete.")
-
-            # --- Gemini API Interaction ---
-            print(f"Uploading {IMAGE_FILE_PATH} to the Gemini API...")
-            image_file_resource = self._gemini_client.files.upload(file=IMAGE_FILE_PATH)
-
-            google_search_tool = Tool(google_search=GoogleSearch())
-
-            print(f"Asking Gemini: '{PROMPT}'")
-            response = self._gemini_client.models.generate_content(
-                model=MODEL_ID,
-                contents=[image_file_resource, PROMPT],
-                config=GenerateContentConfig(tools=[google_search_tool], response_modalities=["TEXT"])
-            )
-
-            # --- Print and Send Response ---
-            if response.candidates:
-                result_text = response.candidates[0].content.parts[0].text
-                print("\n--- Gemini's Response ---")
-                print(result_text)
-                print("-------------------------\n")
-                # Send the final result back to the watch
-                self._notifications.send_notification("Gemini Result", result_text, "Raspberry Pi")
-            else:
-                print("No content generated.")
-                if response.prompt_feedback:
-                    print(f"Prompt Feedback: {response.prompt_feedback}")
-                self._notifications.send_notification("Gemini Result", "Error: No content generated.", "Raspberry Pi")
-
-        except Exception as e:
-            print(f"An error occurred during capture or analysis: {e}")
-            try:
-                self._notifications.send_notification("Gemini Result", f"Error: {e}", "Raspberry Pi")
-            except Exception as notif_e:
-                print(f"Failed to send error notification to Pebble: {notif_e}")
-
-        finally:
-            # --- File Cleanup ---
-            if os.path.exists(IMAGE_FILE_PATH):
-                os.remove(IMAGE_FILE_PATH)
-                print(f"Cleaned up temporary file: {IMAGE_FILE_PATH}")
+        print("\n--- DEBUG: Raw Packet Received ---")
+        print(f"  Packet Type: {type(packet)}")
+        print(f"  Packet Content: {packet}")
+        print("----------------------------------\n")
+        # After running and pressing a button, look for a packet that seems
+        # to correspond to the button press. Then we can write a specific
+        # handler for it.
 
     def run(self):
         """
-        Registers the event handler and starts the main event loop.
+        Registers a raw event handler for debugging and starts the event loop.
         """
-        self._pebble.on("button", self._button_handler)
-        print("Ready. Press the SELECT (middle) button on your Pebble to trigger an image capture.")
-        self._pebble.run_forever()
+        print("Registering a raw handler to identify the button press event...")
+        self._pebble.register_raw_inbound_handler(self._debug_handler)
+
+        print("\nReady. Press the SELECT (middle) button on your Pebble.")
+        print("Watch the terminal for 'DEBUG: Raw Packet Received' output.")
+        
+        self._pebble.run_sync()
 
     def shutdown(self):
         """
         Cleans up resources gracefully.
         """
         print("\nShutting down...")
-        if self._pebble and self._pebble.connected:
-            self._pebble.close()
-            print("Pebble disconnected.")
-        if self._picam2.started:
+        # According to the docs, run_sync() blocks until disconnection.
+        # No explicit disconnect/close call is needed for the Pebble.
+        if hasattr(self, '_picam2') and self._picam2.started:
             self._picam2.stop()
             print("Camera stopped.")
 
