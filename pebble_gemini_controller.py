@@ -164,9 +164,13 @@ class PebbleGeminiController:
             traceback.print_exc()
 
     def _raw_packet_handler(self, packet):
-        """ Handles the middle button press to send a reply-able notification. """
-        # Raw packet debugging, as requested.
-        print(f"DEBUG: Received packet: {packet.hex()}")
+        """ Handles all raw packets, filtering for the middle button press. """
+        # We only care about the very small, specific packet for the button.
+        # Ignore any large, complex packets to avoid overwhelming the library.
+        if len(packet) > 30:
+            return
+
+        print(f"DEBUG: Received small packet: {packet.hex()}")
         if packet == MIDDLE_BUTTON_PACKET:
             print("\n>>> Middle button press detected! Sending voice prompt notification...")
             # Run the notification in a thread to avoid blocking the event loop.
