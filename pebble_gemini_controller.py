@@ -252,6 +252,21 @@ class PebbleGeminiController:
                 os.remove(filename)
                 print(f"Cleaned up temporary file: {filename}")
 
+    def _on_audio_frame(self, app_uuid, frame_data):
+        """
+        Appends incoming audio frames to the buffer during an active voice session.
+        This is called repeatedly by the VoiceService as audio comes in.
+        """
+        if not self._is_voice_session_active:
+            return
+
+        print(".", end="", flush=True)  # Print a dot for each frame to show progress
+        self._audio_buffer.extend(frame_data)
+
+    def _on_audio_stop(self, app_uuid):
+        """ Handles the end of an audio stream. Transcribes the buffered audio. """
+        print("\n>>> Audio stream stopped. Transcribing...")
+
     def run(self):
         """
         Registers event handlers and starts the main event loop.
