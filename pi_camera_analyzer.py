@@ -18,7 +18,7 @@ import sys
 try:
     from picamera2 import Picamera2
 except ImportError:
-    sys.exit("Could not import picamera2. Run 'sudo apt install -y python3-picamera2'")
+    sys.exit("Could not import picamera2. If in a virtual environment, run 'pip install picamera2'. Otherwise, run 'sudo apt install -y python3-picamera2'")
 
 try:
     from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
