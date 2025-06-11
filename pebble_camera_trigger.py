@@ -80,7 +80,6 @@ except ImportError:
 try:
     from libpebble2.communication import PebbleConnection
     from libpebble2.communication.transports.serial import SerialTransport
-    from libpebble2.protocol.buttons import ButtonPress, ButtonRelease
     from libpebble2.services.notifications import Notifications
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
@@ -96,6 +95,9 @@ IMAGE_FILE_PATH = "captured_image.jpg"
 PROMPT = "What is in this image? Be concise."
 # This is the serial port created by the `rfcomm bind` command.
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
+
+# This is the raw byte sequence discovered to correspond to the middle button.
+MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
 
 
 def discover_and_setup():
@@ -201,18 +203,32 @@ class PebbleCameraTrigger:
         print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
-        # The Notifications service is not strictly needed for the trigger,
-        # but is useful for sending status updates back to the watch.
         self._notifications = Notifications(self._pebble)
         print("Pebble connected successfully!")
 
-    def _button_handler(self, packet):
+    def _debug_handler(self, packet):
         """
-        Handles button press events from the Pebble.
-        Triggers on a press of the SELECT (middle) button.
+        Generic raw handler to print details of any packet received.
+        This is used to identify the correct packet type for button presses.
         """
-        if isinstance(packet, ButtonPress) and packet.data.button == ButtonPress.Button.SELECT:
-            print("\n>>> Select button pressed! Starting capture and analysis...")
+        print("\n--- DEBUG: Raw Packet Received ---")
+        print(f"  Packet Type: {type(packet)}")
+        print(f"  Packet Content: {packet}")
+        print("----------------------------------\n")
+        # After running and pressing a button, look for a packet that seems
+        # to correspond to the button press. Then we can write a specific
+        # handler for it.
+
+    def _raw_packet_handler(self, packet):
+        """
+        Handles raw packets from the Pebble and triggers the capture if it
+        matches the known sequence for the middle button.
+        """
+        # We can leave this print statement here for debugging other buttons.
+        print(f"DEBUG: Received packet: {packet.hex()}")
+
+        if packet == MIDDLE_BUTTON_PACKET:
+            print("\n>>> Middle button press detected! Starting capture and analysis...")
             # Run the main logic in a separate thread to avoid blocking the
             # Pebble's event loop. This keeps the watch responsive.
             threading.Thread(target=self._capture_and_analyze).start()
@@ -272,10 +288,13 @@ class PebbleCameraTrigger:
 
     def run(self):
         """
-        Registers the event handler and starts the main event loop.
+        Registers a raw event handler and starts the event loop.
         """
-        self._pebble.register_endpoint(ButtonPress, self._button_handler)
-        print("Ready. Press the SELECT (middle) button on your Pebble to trigger an image capture.")
+        print("Registering raw packet handler...")
+        self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
+
+        print("\nReady. Press the SELECT (middle) button on your Pebble to trigger the Gemini analysis.")
+        
         self._pebble.run_sync()
 
     def shutdown(self):
@@ -295,9 +314,14 @@ def main():
         trigger.connect()
         trigger.run()
     except Exception as e:
-        print(f"\nA critical error occurred: {e}")
-        print("Please ensure the Pebble is paired and bound to rfcomm0.")
-        print("See the setup instructions at the top of this script.")
+        # Check if the error is due to the rfcomm port not existing, which
+        # is the most common first-time setup issue.
+        if "No such file or directory" in str(e):
+            discover_and_setup()
+        else:
+            print(f"\nA critical error occurred: {e}")
+            print("If this is your first time, the Pebble may not be paired correctly.")
+            print("Please restart the script to run the interactive setup process if needed.")
     finally:
         trigger.shutdown()
 
