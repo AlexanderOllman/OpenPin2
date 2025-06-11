@@ -135,7 +135,8 @@ class PebbleGeminiBridge:
         try:
             # Construct a timeline pin with a voice reply action
             pin_id = str(uuid.uuid4())
-            action = TimelineAction(action_type=TimelineAction.Type.VOICE_REPLY)
+            # We must provide an action_id. Let's use 0 for the first action.
+            action = TimelineAction(action_id=0, action_type=TimelineAction.Type.VOICE_REPLY)
             
             pin = TimelineItem(
                 item_id=pin_id,
@@ -154,7 +155,7 @@ class PebbleGeminiBridge:
             self._pebble.send_packet(pin)
             print("Voice prompt sent to watch. Please open it and select 'Reply with Voice'.")
         except Exception as e:
-            print(f"Failed to send voice prompt: {e}")
+            print(f"Failed to send voice prompt: {type(e).__name__}: {e}")
 
     def _handle_audio_data(self, data):
         """
