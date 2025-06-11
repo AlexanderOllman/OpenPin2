@@ -129,21 +129,11 @@ class PebbleGeminiBridge:
         print("Starting voice recording...")
         self._is_recording = True
         try:
-            self._voice_service = VoiceService(self._pebble)
-
-            # --- DEBUGGING: Print available methods to find the correct API ---
-            print("\n--- DEBUG: Available attributes on VoiceService object ---")
-            print(dir(self._voice_service))
-            print("----------------------------------------------------------\n")
-
             self._audio_file = open(AUDIO_FILE_PATH_RAW, 'wb')
+            self._voice_service = VoiceService(self._pebble)
             self._voice_service.register_handler("audio_data", self._handle_audio_data)
-            self._voice_service.start_session()
-            self._notifications.send_notification("Voice Command", "Recording...", "Raspberry Pi")
-        except AttributeError as e:
-            print(f"Caught expected error: {e}")
-            print("Please provide the debug output above so the script can be corrected.")
-            self._is_recording = False
+            self._notifications.send_notification("Voice Command", "Recording... Speak now.", "Raspberry Pi")
+            print("VoiceService is active. Speak into your watch.")
         except Exception as e:
             print(f"Error starting recording: {e}")
             self._is_recording = False
@@ -156,7 +146,7 @@ class PebbleGeminiBridge:
         print("Stopping voice recording...")
         self._is_recording = False
         if self._voice_service:
-            self._voice_service.stop_session()
+            self._voice_service.send_stop_audio()
         if self._audio_file:
             self._audio_file.close()
         
