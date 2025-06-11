@@ -186,9 +186,9 @@ class PebbleGeminiController:
         
         # Register handlers for the duration of this session
         self._voice_service.register_handler("audio_data", self._handle_audio_data)
-        self._voice_service.register_handler("session_end", self._on_session_end)
+        self._voice_service.register_handler("audio_stop", self._on_session_end)
 
-    def _on_session_end(self, data):
+    def _on_session_end(self):
         """
         Callback for when the watch ends the voice session. This triggers
         the analysis of the collected audio.
@@ -198,7 +198,7 @@ class PebbleGeminiController:
 
         # Unregister handlers now that the session is over
         self._voice_service.unregister_handler("audio_data", self._handle_audio_data)
-        self._voice_service.unregister_handler("session_end", self._on_session_end)
+        self._voice_service.unregister_handler("audio_stop", self._on_session_end)
 
         if not self._audio_buffer:
             print("No audio data was recorded.")
