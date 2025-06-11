@@ -32,6 +32,7 @@ import sys
 import threading
 import subprocess
 import re
+import traceback
 
 try:
     from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
@@ -242,7 +243,10 @@ def main():
     except FileNotFoundError:
         discover_and_setup()
     except Exception as e:
-        print(f"\nA critical error occurred: {e}")
+        print(f"\nA critical error occurred. Exception type: {type(e)}")
+        print("--- Full Traceback ---")
+        traceback.print_exc()
+        print("----------------------")
     finally:
         controller.shutdown()
 
