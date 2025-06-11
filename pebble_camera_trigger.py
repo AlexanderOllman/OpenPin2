@@ -256,7 +256,14 @@ class PebbleCameraTrigger:
             self._is_recording = True
             print("\n>>> BOTTOM BUTTON: STARTING voice recording session...")
             self._notifications.send_notification("Voice Capture", "Recording... Press bottom button again to stop.", "Raspberry Pi")
-            self._voice_service.start_transcription()
+            try:
+                self._voice_service.start_transcription()
+            except Exception as e:
+                print(f"\n--- FAILED TO START VOICE SERVICE ---")
+                print(f"Error: {e}")
+                print("-------------------------------------\n")
+                # Reset the recording state since it failed to start.
+                self._is_recording = False
 
         else:
             # --- STOP RECORDING ---
