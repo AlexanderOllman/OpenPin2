@@ -56,6 +56,7 @@ After completing these steps, you are ready to run this Python script.
 You will need to install libpebble2 in your virtual environment:
 pip install libpebble2 google-generativeai
 
+PEBBLE MAC ADDRESS: 51:7E:64:C0:B6:5E
 """
 import time
 import os
@@ -271,7 +272,7 @@ class PebbleCameraTrigger:
         """
         Registers the event handler and starts the main event loop.
         """
-        self._pebble.register_handler("button", self._button_handler)
+        self._pebble.on("button", self._button_handler)
         print("Ready. Press the SELECT (middle) button on your Pebble to trigger an image capture.")
         self._pebble.run_forever()
 
@@ -281,7 +282,7 @@ class PebbleCameraTrigger:
         """
         print("\nShutting down...")
         if self._pebble and self._pebble.connected:
-            self._pebble.disconnect()
+            self._pebble.close()
             print("Pebble disconnected.")
         if self._picam2.started:
             self._picam2.stop()
