@@ -143,8 +143,12 @@ class PebbleGeminiController:
         
         # Proactively fetch watch info to prevent timeouts later.
         print("Fetching watch info...")
-        self._pebble.fetch_watch_info()
-        print(f"Connected to a {self._pebble.watch_info.running.model_name} running firmware {self._pebble.firmware_version}")
+        try:
+            self._pebble.fetch_watch_info()
+            print(f"Connected to a {self._pebble.watch_info.running.model_name} running firmware {self._pebble.firmware_version}")
+        except TimeoutError:
+            print("Warning: Could not fetch watch info. Notifications may not work, but voice capture should.")
+            # We can continue without this information.
 
     def _raw_packet_handler(self, packet):
         """ Handles the middle button press to toggle recording. """
