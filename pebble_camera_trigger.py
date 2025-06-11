@@ -41,6 +41,7 @@ import sys
 import threading
 import subprocess
 import re
+import uuid
 
 try:
     from picamera2 import Picamera2
@@ -58,6 +59,7 @@ try:
     from libpebble2.communication.transports.serial import SerialTransport
     from libpebble2.services.notifications import Notifications
     from libpebble2.services.voice import VoiceService
+    from libpebble2.protocol.timeline import TimelineItem, TimelineAttribute, TimelineAction
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
 
@@ -108,6 +110,12 @@ class PebbleGeminiBridge:
         self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
         self._pebble.connect()
         self._notifications = Notifications(self._pebble)
+        
+        # Initialize VoiceService immediately and wait for the watch to connect.
+        self._voice_service = VoiceService(self._pebble)
+        self._voice_service.register_handler("audio_data", self._handle_audio_data)
+        self._voice_service.register_handler("session_ended", self._stop_recording_and_analyze)
+        
         print("Pebble connected successfully!")
 
     def _raw_packet_handler(self, packet):
@@ -116,41 +124,62 @@ class PebbleGeminiBridge:
             print("\n>>> Middle button press detected! Starting image analysis...")
             threading.Thread(target=self._capture_and_analyze_image).start()
         elif packet == BOTTOM_BUTTON_PACKET:
-            print("\n>>> Bottom button press detected! Toggling voice recording...")
-            self._toggle_voice_recording()
-
-    def _toggle_voice_recording(self):
-        if not self._is_recording:
-            self._start_recording()
-        else:
-            self._stop_recording_and_analyze()
-
-    def _start_recording(self):
-        print("Starting voice recording...")
-        self._is_recording = True
+            print("\n>>> Bottom button press detected! Sending voice prompt to watch...")
+            self._send_voice_prompt()
+            
+    def _send_voice_prompt(self):
+        """
+        Sends a notification with a "Reply with Voice" action to the watch.
+        This is the new trigger for the voice workflow.
+        """
         try:
-            self._audio_file = open(AUDIO_FILE_PATH_RAW, 'wb')
-            self._voice_service = VoiceService(self._pebble)
-            self._voice_service.register_handler("audio_data", self._handle_audio_data)
-            self._notifications.send_notification("Voice Command", "Recording... Speak now.", "Raspberry Pi")
-            print("VoiceService is active. Speak into your watch.")
+            # Construct a timeline pin with a voice reply action
+            pin_id = str(uuid.uuid4())
+            action = TimelineAction(action_type=TimelineAction.Type.VOICE_REPLY)
+            
+            pin = TimelineItem(
+                item_id=pin_id,
+                parent_id=pin_id, # Can be self-referential
+                timestamp=int(time.time()),
+                duration=0,
+                type=TimelineItem.Type.NOTIFICATION,
+                flags=0,
+                layout=0x01,  # Generic Notification Layout
+                attributes=[
+                    TimelineAttribute(attribute_id=1, content="Voice Command"),
+                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini."),
+                ],
+                actions=[action]
+            )
+            self._pebble.send_packet(pin)
+            print("Voice prompt sent to watch. Please open it and select 'Reply with Voice'.")
         except Exception as e:
-            print(f"Error starting recording: {e}")
-            self._is_recording = False
+            print(f"Failed to send voice prompt: {e}")
 
     def _handle_audio_data(self, data):
+        """
+        Receives audio chunks from the watch and writes them to a file.
+        """
+        if not self._is_recording:
+            print("Audio stream started. Recording...")
+            self._is_recording = True
+            self._audio_file = open(AUDIO_FILE_PATH_RAW, 'wb')
+
         if self._audio_file:
             self._audio_file.write(data)
 
     def _stop_recording_and_analyze(self):
-        print("Stopping voice recording...")
+        """
+        Triggered when the watch signals the end of the voice session.
+        """
+        if not self._is_recording:
+            return # Avoids triggering on session setup failures
+
+        print("Voice session ended. Processing audio...")
         self._is_recording = False
-        if self._voice_service:
-            self._voice_service.send_stop_audio()
         if self._audio_file:
             self._audio_file.close()
         
-        self._notifications.send_notification("Voice Command", "Processing audio...", "Raspberry Pi")
         threading.Thread(target=self._process_audio_with_gemini).start()
 
     def _process_audio_with_gemini(self):
