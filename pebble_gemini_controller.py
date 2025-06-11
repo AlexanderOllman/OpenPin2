@@ -137,9 +137,6 @@ class PebbleGeminiController:
         self._audio_buffer = bytearray()
         self._is_voice_session_active = False
 
-        # Register a handler for the specific endpoint associated with button presses.
-        self._pebble.pebble.register_handler(BUTTON_ENDPOINT, self._button_press_handler)
-
     def connect(self):
         """ Initializes the connection to the Pebble watch. """
         print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
