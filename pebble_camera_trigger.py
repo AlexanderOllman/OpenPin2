@@ -133,33 +133,20 @@ class PebbleGeminiBridge:
         This is the new trigger for the voice workflow.
         """
         try:
-            # Construct a timeline pin with a voice reply action
-            pin_id = str(uuid.uuid4())
-            # An action needs its own attributes to define its label.
-            action = TimelineAction(action_id=0, type=TimelineAction.Type.Response, attributes=[
-                TimelineAttribute(attribute_id=1, content="Reply".encode('utf-8')),
-            ])
-            
-            # The debug output has shown us the correct names.
-            # - The parameter is 'type'.
-            pin = TimelineItem(
-                item_id=pin_id,
-                parent_id=pin_id,
-                timestamp=int(time.time()),
-                duration=0,
-                type=TimelineItem.Type.Notification,
-                flags=0,
-                layout=0x01,  # Generic Notification Layout
-                attributes=[
-                    TimelineAttribute(attribute_id=1, content="Voice Command".encode('utf-8')),
-                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
-                ],
-                actions=[action]
+            # DIAGNOSTIC: Instead of building a complex TimelineItem, we will try
+            # to send a simple notification using the high-level service.
+            # This will NOT have a "Reply" action. If this works, we know the
+            # service is the correct path forward.
+            print("Attempting to send a simple notification as a diagnostic step...")
+            self._notifications.send_notification(
+                subject="Voice Command",
+                message="Test from Pi. If you see this, the service works."
             )
-            self._pebble.send_packet(pin)
-            print("Voice prompt sent to watch. Please open it and select 'Reply'.")
+            print("Simple notification sent. Please check your watch.")
+            print("If it appeared, the next step is to add a voice action to it.")
+
         except Exception as e:
-            print(f"Failed to send voice prompt: {type(e).__name__}: {e}")
+            print(f"Failed to send simple notification: {type(e).__name__}: {e}")
 
     def _handle_audio_data(self, data):
         """
