@@ -143,17 +143,13 @@ class PebbleGeminiController:
     def _send_prompt_notification(self):
         """ Sends the voice prompt notification in a separate thread to avoid deadlocks. """
         try:
-            # --- DEBUGGING: Print available action types to find the voice reply enum ---
-            print("\n--- DEBUG: Available attributes on TimelineAction.Type ---")
-            print(dir(TimelineAction.Type))
-            print("----------------------------------------------------------\n")
-            
-            # This is an educated guess and will likely fail, but the debug output above is what we need.
+            # This action will provide a "Reply" option on the notification,
+            # which will trigger the voice dictation UI on the watch.
             voice_action = TimelineAction(
                 action_id=1,  # A unique ID for this action.
-                type=TimelineAction.Type.VoiceReply,
+                type=TimelineAction.Type.Response,
                 attributes=[
-                    TimelineAttribute(attribute_id=0x01, content="Reply with Voice".encode('utf-8'))
+                    TimelineAttribute(attribute_id=0x01, content="Reply".encode('utf-8'))
                 ])
 
             self._notifications.send_notification(
@@ -162,9 +158,7 @@ class PebbleGeminiController:
                 "Raspberry Pi",
                 actions=[voice_action]
             )
-        except AttributeError as e:
-            print(f"Caught expected error: {e}")
-            print("Please provide the debug output above so the script can be corrected.")
+            print("Voice prompt notification sent successfully.")
         except Exception as e:
             print(f"An unexpected error occurred sending notification:")
             traceback.print_exc()
