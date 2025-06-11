@@ -259,11 +259,15 @@ class PebbleGeminiController:
         print("Registering voice session and button press handlers...")
         # This is the main trigger for our entire workflow.
         self._voice_service.register_handler("session_setup", self._on_session_setup)
-        self._pebble.pebble.register_handler(BUTTON_ENDPOINT, self._button_press_handler)
+        self._voice_service.register_handler("audio_frame", self._on_audio_frame)
+        self._voice_service.register_handler("audio_stop", self._on_audio_stop)
+
+        # Register a handler for the specific button-press endpoint.
+        # The first argument "endpoints" tells libpebble2 we are listening to a raw endpoint.
+        self._pebble.register_handler("endpoints", BUTTON_ENDPOINT, self._button_press_handler)
 
         print("\nReady. Press the SELECT (middle) button on your Pebble to receive a voice prompt.")
-        
-        self._pebble.run_sync()
+        self._pebble.run_async()
 
     def shutdown(self):
         """ Cleans up resources gracefully. """
