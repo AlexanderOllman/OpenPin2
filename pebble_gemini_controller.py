@@ -45,6 +45,7 @@ try:
     from libpebble2.communication.transports.serial import SerialTransport
     from libpebble2.services.notifications import Notifications
     from libpebble2.services.voice import VoiceService, SetupResult
+    from libpebble2.protocol.timeline import TimelineAction, TimelineAttribute
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
 
@@ -142,9 +143,31 @@ class PebbleGeminiController:
     def _send_prompt_notification(self):
         """ Sends the voice prompt notification in a separate thread to avoid deadlocks. """
         try:
-            self._notifications.send_notification("Gemini Voice Prompt", "Reply with voice to dictate your prompt.", "Raspberry Pi")
+            # --- DEBUGGING: Print available action types to find the voice reply enum ---
+            print("\n--- DEBUG: Available attributes on TimelineAction.Type ---")
+            print(dir(TimelineAction.Type))
+            print("----------------------------------------------------------\n")
+            
+            # This is an educated guess and will likely fail, but the debug output above is what we need.
+            voice_action = TimelineAction(
+                action_id=1,  # A unique ID for this action.
+                type=TimelineAction.Type.VoiceReply,
+                attributes=[
+                    TimelineAttribute(attribute_id=0x01, content="Reply with Voice".encode('utf-8'))
+                ])
+
+            self._notifications.send_notification(
+                "Gemini Voice Prompt",
+                "Reply with voice to dictate your prompt.",
+                "Raspberry Pi",
+                actions=[voice_action]
+            )
+        except AttributeError as e:
+            print(f"Caught expected error: {e}")
+            print("Please provide the debug output above so the script can be corrected.")
         except Exception as e:
-            print(f"Error sending notification: {e}")
+            print(f"An unexpected error occurred sending notification:")
+            traceback.print_exc()
 
     def _raw_packet_handler(self, packet):
         """ Handles the middle button press to send a reply-able notification. """
