@@ -74,7 +74,7 @@ try:
     from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
     from google import genai
 except ImportError:
-    sys.exit("Could not import google.genai. Run 'pip install google-genai'")
+    sys.exit("Could not import google.genai. Run 'pip install google-generativeai'")
 
 try:
     from libpebble2.communication import PebbleConnection
@@ -280,7 +280,7 @@ class PebbleCameraTrigger:
         Cleans up resources gracefully.
         """
         print("\nShutting down...")
-        if self._pebble and self._pebble.is_connected:
+        if self._pebble and self._pebble.connected:
             self._pebble.disconnect()
             print("Pebble disconnected.")
         if self._picam2.started:
@@ -292,14 +292,15 @@ def main():
     try:
         trigger.connect()
         trigger.run()
-    except FileNotFoundError:
-        # This error is expected if /dev/rfcomm0 doesn't exist.
-        # Trigger the interactive setup process.
-        discover_and_setup()
     except Exception as e:
-        print(f"\nA critical error occurred: {e}")
-        print("If this is your first time, the Pebble may not be paired correctly.")
-        print("Please restart the script to run the interactive setup process.")
+        # Check if the error is due to the rfcomm port not existing, which
+        # is the most common first-time setup issue.
+        if "No such file or directory" in str(e):
+            discover_and_setup()
+        else:
+            print(f"\nA critical error occurred: {e}")
+            print("If this is your first time, the Pebble may not be paired correctly.")
+            print("Please restart the script to run the interactive setup process if needed.")
     finally:
         trigger.shutdown()
 
