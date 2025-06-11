@@ -149,8 +149,8 @@ class PebbleGeminiBridge:
                 flags=0,
                 layout=0x01,  # Generic Notification Layout
                 attributes=[
-                    TimelineAttribute(attribute_id=1, content="Voice Command"),
-                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini."),
+                    TimelineAttribute(attribute_id=1, content="Voice Command".encode('utf-8')),
+                    TimelineAttribute(attribute_id=3, content="Reply with voice to send a command to Gemini.".encode('utf-8')),
                 ],
                 actions=[action]
             )
