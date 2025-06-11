@@ -44,7 +44,7 @@ try:
     from libpebble2.communication import PebbleConnection
     from libpebble2.communication.transports.serial import SerialTransport
     from libpebble2.services.notifications import Notifications
-    from libpebble2.services.voice import VoiceService, SetupResult
+    from libpebble2.services.voice import VoiceService, SetupResult, VoiceTranscription
 except ImportError:
     sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
 
@@ -55,8 +55,6 @@ if not API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
 MODEL_ID = "gemini-2.0-flash"
-# This is the raw byte sequence for the middle button, discovered via debugging.
-MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
 PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
 
 
@@ -128,11 +126,7 @@ class PebbleGeminiController:
         self._notifications = None
         self._voice_service = None
         self._gemini_client = genai.Client(api_key=API_KEY)
-        # State management
-        self._is_recording = False
         self._audio_buffer = bytearray()
-        self._audio_data_handle = None
-        self._session_end_handle = None
 
     def connect(self):
         """ Initializes the connection to the Pebble watch. """
@@ -143,47 +137,42 @@ class PebbleGeminiController:
         self._voice_service = VoiceService(self._pebble)
         print("Pebble connected successfully!")
 
-    def start_recording_session(self, data):
+    def _on_voice_control(self, data):
         """
-        Handler for when the watch requests to start a voice session.
-        This is the primary trigger for the recording process.
+        This is the main entry point, triggered when the watch wants to start
+        a voice session.
         """
-        if self._is_recording:
-            return
-            
-        print("\n>>> Voice session request received from watch. Starting recording...")
-        self._is_recording = True
+        print("\n>>> Voice session requested by watch. Clearing buffer.")
         self._audio_buffer.clear()
         
-        # We must approve the session request for the watch to start sending audio.
+        # We must register handlers here, inside the request context.
+        self._voice_service.register_handler("audio_data", self._handle_audio_data)
+        self._voice_service.register_handler("session_end", self._handle_session_end)
+        
+        # Now we can safely tell the watch we are ready.
         self._voice_service.send_session_setup_result(result=SetupResult.Success)
-        self._notifications.send_notification("Gemini Voice", "Listening...", "Raspberry Pi")
 
-    def stop_recording_and_analyze(self):
-        """ Stops the recording and starts the Gemini analysis. """
-        if not self._is_recording:
-            return
-        
-        print("\n>>> Stop recording triggered. Processing audio...")
-        self._is_recording = False
-        self._notifications.send_notification("Gemini Voice", "Processing...", "Raspberry Pi")
-
-        audio_filename = "dictated_audio.ogg"
-        with open(audio_filename, "wb") as f:
-            f.write(self._audio_buffer)
-
-        # The analysis runs in a separate thread to keep the main loop responsive.
-        threading.Thread(target=self._analyze_audio, args=(audio_filename,)).start()
-        
     def _handle_audio_data(self, data):
         """ Appends incoming audio data chunks to the buffer. """
         self._audio_buffer.extend(data)
         
     def _handle_session_end(self, data):
-        """ Handles when the session is terminated from the watch side. """
-        print("Voice session ended from watch. Analyzing...")
-        if self._is_recording:
-            self.stop_recording_and_analyze()
+        """
+        Triggered when the watch stops sending audio. This is where we
+        start the analysis.
+        """
+        print(">>> Voice session ended from watch. Processing audio...")
+
+        audio_filename = "dictated_audio.ogg"
+        with open(audio_filename, "wb") as f:
+            f.write(self._audio_buffer)
+
+        # It's crucial to unregister the handlers to prevent duplicates
+        # on the next session.
+        self._voice_service.unregister_handler("audio_data")
+        self._voice_service.unregister_handler("session_end")
+
+        threading.Thread(target=self._analyze_audio, args=(audio_filename,)).start()
 
     def _analyze_audio(self, filename):
         """ Uploads the audio to Gemini and sends the result to the Pebble. """
@@ -202,7 +191,10 @@ class PebbleGeminiController:
             print("\n--- Gemini's Transcription ---")
             print(result_text)
             print("------------------------------\n")
-            self._notifications.send_notification("Transcription", result_text, "Gemini")
+            # The VoiceService requires a specific object type for the result.
+            self._voice_service.send_dictation_result(
+                transcriptions=[VoiceTranscription(text=result_text, score=1.0)]
+            )
 
         except Exception as e:
             print(f"An error occurred during analysis: {e}")
@@ -213,16 +205,12 @@ class PebbleGeminiController:
                 print(f"Cleaned up temporary file: {filename}")
 
     def run(self):
-        """ Registers handlers for the voice service and starts the event loop. """
-        print("Registering voice service handlers...")
-        # This handler is called when the user activates dictation on the watch.
-        self._voice_service.register_handler("voice_control", self.start_recording_session)
-        # This handler collects the streaming audio data.
-        self._voice_service.register_handler("audio_data", self._handle_audio_data)
-        # This handler is called when the watch ends the session (e.g. timeout or cancel).
-        self._voice_service.register_handler("session_end", self._handle_session_end)
+        """ Registers the main event handler and starts the event loop. """
+        # We listen for the watch to ask to start a session.
+        self._voice_service.register_handler("voice_control", self._on_voice_control)
 
-        print("\nReady. Activate dictation on your Pebble (e.g., hold the BACK button).")
+        print("\nReady. Activate voice dictation on your Pebble to begin.")
+        print("(This is usually a long-press of the back or select button).")
         
         self._pebble.run_sync()
 
