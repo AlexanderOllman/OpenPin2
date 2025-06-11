@@ -132,7 +132,6 @@ class PebbleGeminiController:
         self._audio_buffer = bytearray()
         self._audio_data_handle = None
         self._session_end_handle = None
-        self._session_id = 1 # We'll use a static session ID for simplicity
 
     def connect(self):
         """ Initializes the connection to the Pebble watch. """
@@ -157,14 +156,11 @@ class PebbleGeminiController:
         self._is_recording = True
         self._audio_buffer.clear()
         
-        # Increment session ID for each new recording
-        self._session_id += 1
-        
         self._audio_data_handle = self._voice_service.register_handler("audio_data", self._handle_audio_data)
         self._session_end_handle = self._voice_service.register_handler("session_end", self._handle_session_end)
         
         # Tell the watch that a voice session is ready to start.
-        self._voice_service.send_session_setup_result(result=SetupResult.Success, session_id=self._session_id)
+        self._voice_service.send_session_setup_result(result=SetupResult.Success)
         self._notifications.send_notification("Gemini Voice", "Recording...", "Raspberry Pi")
 
     def stop_recording(self):
@@ -176,7 +172,7 @@ class PebbleGeminiController:
         self._is_recording = False
         
         # Tell the watch to stop sending audio data for this session.
-        self._voice_service.send_stop_audio(session_id=self._session_id)
+        self._voice_service.send_stop_audio()
         
         self._notifications.send_notification("Gemini Voice", "Processing...", "Raspberry Pi")
 
