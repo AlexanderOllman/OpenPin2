@@ -200,7 +200,8 @@ class PebbleCameraTrigger:
         try:
             sd.query_devices()
         except Exception as e:
-            sys.exit(f"Could not query audio devices. Is a microphone connected? Error: {e}")
+            # Note: This will fail if PortAudio is not installed.
+            print(f"Could not query audio devices. Is a microphone connected and PortAudio installed? Error: {e}")
         self._samplerate = 44100
 
     def connect(self):
@@ -404,6 +405,9 @@ def main():
         # is the most common first-time setup issue.
         if "No such file or directory" in str(e):
             discover_and_setup()
+        elif "PortAudio" in str(e):
+             print("\nError: PortAudio library not found or could not be initialized.")
+             print("Please install it with 'sudo apt-get install libportaudio2' and ensure a microphone is connected.")
         else:
             print(f"\nA critical error occurred: {e}")
             print("If this is your first time, the Pebble may not be paired correctly.")
