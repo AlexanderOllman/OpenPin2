@@ -197,6 +197,7 @@ class PebbleCameraTrigger:
         self._is_recording = False
         self._audio_stream = None
         self._audio_frames = []
+        self._image_capture_thread = None
         # Check for available microphones
         try:
             sd.query_devices()
@@ -213,8 +214,10 @@ class PebbleCameraTrigger:
         print("Initializing camera...")
         config = self._picam2.create_still_configuration(main={"size": (1280, 720)})
         self._picam2.configure(config)
+        # Set continuous autofocus mode
+        self._picam2.set_controls({"AfMode": 2, "AfTrigger": 0})
         self._picam2.start()
-        time.sleep(2)
+        time.sleep(2) # Allow camera to warm up
         print("Camera ready.")
 
         # --- Pebble Connection ---
@@ -236,6 +239,20 @@ class PebbleCameraTrigger:
         # After running and pressing a button, look for a packet that seems
         # to correspond to the button press. Then we can write a specific
         # handler for it.
+
+    def _perform_image_capture(self):
+        """
+        Handles the camera focusing and capture logic.
+        This is designed to be run in a separate thread.
+        """
+        print("Focusing camera...")
+        # Trigger autofocus and wait for it to complete
+        self._picam2.autofocus_cycle()
+        time.sleep(1) # Extra delay for sensor to adjust
+
+        print(f"Capturing image to {IMAGE_FILE_PATH}...")
+        self._picam2.capture_file(IMAGE_FILE_PATH)
+        print("Capture complete.")
 
     def _start_recording(self):
         """
@@ -287,46 +304,59 @@ class PebbleCameraTrigger:
 
     def _raw_packet_handler(self, packet):
         """
-        Handles raw packets from the Pebble. The first press starts audio
-        recording, the second press stops it and triggers the analysis.
+        Handles raw packets from the Pebble. The first press captures an image
+        and starts audio recording in parallel. The second press stops and analyzes.
         """
         # We can leave this print statement here for debugging other buttons.
         print(f"DEBUG: Received packet: {packet.hex()}")
 
         if packet == MIDDLE_BUTTON_PACKET:
             if not self._is_recording:
-                # --- START RECORDING ---
-                print("\n>>> Middle button press detected! Starting audio recording...")
+                # --- CAPTURE IMAGE AND START RECORDING IN PARALLEL ---
+                print("\n>>> Middle button press detected! Starting parallel capture and recording...")
+                
+                # Start image capture in a background thread
+                self._image_capture_thread = threading.Thread(target=self._perform_image_capture)
+                self._image_capture_thread.start()
+
+                # Start audio recording
                 self._is_recording = True
                 self._start_recording()
                 if self._is_recording: # Check if recording actually started
-                    self._notifications.send_notification("Gemini Trigger", "Recording... Press again to stop.", "Raspberry Pi")
+                    self._notifications.send_notification("Gemini Trigger", "Capturing & Recording...", "Raspberry Pi")
             else:
                 # --- STOP RECORDING AND ANALYZE ---
-                print("\n>>> Middle button press detected! Stopping recording and starting analysis...")
+                print("\n>>> Middle button press detected! Stopping recording and waiting for capture to finish...")
                 self._is_recording = False
                 audio_path = self._stop_recording()
 
                 if audio_path:
+                    # Wait for the image capture thread to finish before analyzing
+                    if self._image_capture_thread is not None:
+                        print("Waiting for image capture to complete...")
+                        self._image_capture_thread.join()
+                        print("Image capture confirmed complete.")
+                    
                     # Run the main logic in a separate thread to avoid blocking
                     threading.Thread(target=self._capture_and_analyze, args=(audio_path,)).start()
                 else:
                     print("Audio recording failed, aborting analysis.")
-                    self._notifications.send_notification("Gemini Trigger", "Recoding failed.", "Raspberry Pi")
+                    self._notifications.send_notification("Gemini Trigger", "Recording failed.", "Raspberry Pi")
 
     def _capture_and_analyze(self, audio_file_path):
         """
-        The core logic: notifies the watch, captures, analyzes, and cleans up.
-        This now involves a two-step Gemini process.
+        The core logic: notifies the watch, analyzes the pre-captured image
+        and new audio, and cleans up. This involves a two-step Gemini process.
         """
         try:
             # --- Notify Pebble that the action has started ---
             self._notifications.send_notification("Gemini Trigger", "Analyzing...", "Raspberry Pi")
 
-            # --- Camera Capture ---
-            print(f"Capturing image to {IMAGE_FILE_PATH}...")
-            self._picam2.capture_file(IMAGE_FILE_PATH)
-            print("Capture complete.")
+            # --- Image is already captured, just check for existence ---
+            if not os.path.exists(IMAGE_FILE_PATH):
+                print(f"Error: Image file not found at {IMAGE_FILE_PATH}. Aborting.")
+                self._notifications.send_notification("Gemini Error", "Image file missing.", "Raspberry Pi")
+                return
 
             # --- Gemini API Interaction ---
             print(f"Uploading {IMAGE_FILE_PATH} and {audio_file_path} to the Gemini API...")
