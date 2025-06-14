@@ -375,22 +375,42 @@ class PebbleCameraTrigger:
     def run(self):
         """
         Registers a raw event handler and starts the event loop.
+        Also listens for keyboard input for local testing.
         """
         print("Registering raw packet handler...")
         self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
 
         print("\nReady. Press the SELECT (middle) button on your Pebble to start recording your question.")
         print("Press it a second time to stop recording and trigger the Gemini analysis.")
+        print("Alternatively, press [Enter] in this terminal to simulate the button press flow.")
         
-        self._pebble.run_sync()
+        # Run pebble connection in a separate thread
+        pebble_thread = threading.Thread(target=self._pebble.run_sync)
+        pebble_thread.daemon = True  # Allows main thread to exit.
+        pebble_thread.start()
+
+        # Listen for keyboard input in the main thread
+        while pebble_thread.is_alive():
+            try:
+                # This will block until the user presses Enter.
+                input()
+                print("\n>>> [Enter] key pressed! Simulating button press...")
+                # Simulate a middle button press by calling the handler directly.
+                self._raw_packet_handler(MIDDLE_BUTTON_PACKET)
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting...")
+                break
 
     def shutdown(self):
         """
         Cleans up resources gracefully.
         """
         print("\nShutting down...")
-        # According to the docs, run_sync() blocks until disconnection.
-        # No explicit disconnect/close call is needed for the Pebble.
+        # Now that run_sync is in a thread, we should disconnect manually.
+        if self._pebble and self._pebble.connected:
+            self._pebble.disconnect()
+            print("Pebble disconnected.")
+
         if hasattr(self, '_picam2') and self._picam2.started:
             self._picam2.stop()
             print("Camera stopped.")
