@@ -365,7 +365,7 @@ class PebbleCameraTrigger:
 
             # --- 1. First Gemini Call: Analyze and Transcribe to JSON ---
             print("\n--- Step 1: Analyzing image and transcribing audio... ---")
-            prompt1 = "Analyze the provided image in detail and transcribe the audio. Respond ONLY with a valid JSON object with two keys: 'image_description' and 'audio_transcription'."
+            prompt1 = "Analyze the provided image and transcribe the audio. Focus on the foreground object(s) and, where relevant, make note of the background. Provide a very granular amount of detail about what you see in the image, particularly for labels or objects that someone might be holding or close to. Respond ONLY with a valid JSON object with two keys: 'image_description' and 'audio_transcription'."
             
             # No tools for the first call to ensure it focuses on description/transcription.
             response1 = self._gemini_client.models.generate_content(
@@ -395,7 +395,7 @@ class PebbleCameraTrigger:
             print("\n--- Step 2: Answering question using analysis and Google Search... ---")
             
             prompt2 = (
-                f"Given the following context from an image, answer the user's question. "
+                f"Given the following context from an image, answer the user's question in under 20 words. "
                 f"Use a Google search to find the answer if necessary.\n\n"
                 f"Image Context: \"{image_description}\"\n\n"
                 f"User's Question: \"{audio_transcription}\""
