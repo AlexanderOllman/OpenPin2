@@ -65,6 +65,7 @@ import threading
 from functools import partial
 import subprocess
 import re
+import json
 
 try:
     from picamera2 import Picamera2
@@ -316,10 +317,11 @@ class PebbleCameraTrigger:
     def _capture_and_analyze(self, audio_file_path):
         """
         The core logic: notifies the watch, captures, analyzes, and cleans up.
+        This now involves a two-step Gemini process.
         """
         try:
             # --- Notify Pebble that the action has started ---
-            self._notifications.send_notification("Gemini Trigger", "Capturing & analyzing...", "Raspberry Pi")
+            self._notifications.send_notification("Gemini Trigger", "Analyzing...", "Raspberry Pi")
 
             # --- Camera Capture ---
             print(f"Capturing image to {IMAGE_FILE_PATH}...")
@@ -327,34 +329,69 @@ class PebbleCameraTrigger:
             print("Capture complete.")
 
             # --- Gemini API Interaction ---
-            print(f"Uploading {IMAGE_FILE_PATH} to the Gemini API...")
+            print(f"Uploading {IMAGE_FILE_PATH} and {audio_file_path} to the Gemini API...")
             image_file_resource = self._gemini_client.files.upload(file=IMAGE_FILE_PATH)
-            
-            print(f"Uploading {audio_file_path} to the Gemini API...")
             audio_file_resource = self._gemini_client.files.upload(file=audio_file_path)
 
-            google_search_tool = Tool(google_search=GoogleSearch())
-
-            print("Asking Gemini to analyze the image based on your audio query...")
-            response = self._gemini_client.models.generate_content(
+            # --- 1. First Gemini Call: Analyze and Transcribe to JSON ---
+            print("\n--- Step 1: Analyzing image and transcribing audio... ---")
+            prompt1 = "Analyze the provided image in detail and transcribe the audio. Respond ONLY with a valid JSON object with two keys: 'image_description' and 'audio_transcription'."
+            
+            # No tools for the first call to ensure it focuses on description/transcription.
+            response1 = self._gemini_client.models.generate_content(
                 model=MODEL_ID,
-                contents=[audio_file_resource, image_file_resource],
+                contents=[prompt1, image_file_resource, audio_file_resource],
+                config=GenerateContentConfig(response_mime_type="application/json")
+            )
+
+            if not response1.candidates:
+                raise ValueError("First Gemini call failed to generate content.")
+
+            # Extract, parse, and print the JSON result
+            json_text = response1.candidates[0].content.parts[0].text
+            print("Gemini (Step 1) JSON Response:")
+            print(json_text)
+            
+            try:
+                analysis_result = json.loads(json_text)
+                image_description = analysis_result.get("image_description", "No description provided.")
+                audio_transcription = analysis_result.get("audio_transcription", "No transcription provided.")
+            except json.JSONDecodeError:
+                print("Error: Failed to decode JSON from the first Gemini response.")
+                self._notifications.send_notification("Gemini Error", "JSON parsing failed.", "Raspberry Pi")
+                return
+
+            # --- 2. Second Gemini Call: Search and Answer ---
+            print("\n--- Step 2: Answering question using analysis and Google Search... ---")
+            
+            prompt2 = (
+                f"Given the following context from an image, answer the user's question. "
+                f"Use a Google search to find the answer if necessary.\n\n"
+                f"Image Context: \"{image_description}\"\n\n"
+                f"User's Question: \"{audio_transcription}\""
+            )
+            
+            google_search_tool = Tool(google_search=GoogleSearch())
+            
+            response2 = self._gemini_client.models.generate_content(
+                model=MODEL_ID,
+                contents=[prompt2], # Only text prompt for this call
                 config=GenerateContentConfig(tools=[google_search_tool], response_modalities=["TEXT"])
             )
 
-            # --- Print and Send Response ---
-            if response.candidates:
-                result_text = response.candidates[0].content.parts[0].text
-                print("\n--- Gemini's Response ---")
-                print(result_text)
-                print("-------------------------\n")
+            # --- Print and Send Final Response ---
+            if response2.candidates:
+                final_answer = response2.candidates[0].content.parts[0].text
+                print("\n--- Gemini's Final Answer (Step 2) ---")
+                print(final_answer)
+                print("--------------------------------------\n")
                 # Send the final result back to the watch
-                self._notifications.send_notification("Gemini Result", result_text, "Raspberry Pi")
+                self._notifications.send_notification("Gemini Result", final_answer, "Raspberry Pi")
             else:
-                print("No content generated.")
-                if response.prompt_feedback:
-                    print(f"Prompt Feedback: {response.prompt_feedback}")
-                self._notifications.send_notification("Gemini Result", "Error: No content generated.", "Raspberry Pi")
+                print("No final answer generated.")
+                if response2.prompt_feedback:
+                    print(f"Prompt Feedback: {response2.prompt_feedback}")
+                self._notifications.send_notification("Gemini Result", "Error: No final answer.", "Raspberry Pi")
 
         except Exception as e:
             print(f"An error occurred during capture or analysis: {e}")
