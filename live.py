@@ -56,7 +56,7 @@ You will need to install the following libraries in your virtual environment:
 pip install libpebble2 google-generativeai pyaudio Pillow "taskgroup;python_version<'3.11'" "exceptiongroup;python_version<'3.11'"
 
 And install system dependencies for audio:
-sudo apt-get install libportaudio2
+sudo apt-get install libportaudio2 portaudio19-dev
 
 PEBBLE MAC ADDRESS: 51:7E:64:C0:B6:5E
 """
@@ -225,7 +225,8 @@ class PebbleLiveSession:
 
     def connect(self):
         """
-        Initializes the camera and connects to the Pebble watch.
+        Initializes the camera and attempts to connect to the Pebble watch.
+        If the watch is not found, it continues allowing for keyboard-only control.
         """
         # --- Camera Setup ---
         print("Initializing camera...")
@@ -234,11 +235,17 @@ class PebbleLiveSession:
         print("Camera ready.")
 
         # --- Pebble Connection ---
-        print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
-        self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
-        self._pebble.connect()
-        self._notifications = Notifications(self._pebble)
-        print("Pebble connected successfully!")
+        try:
+            print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
+            self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
+            self._pebble.connect()
+            self._notifications = Notifications(self._pebble)
+            print("Pebble connected successfully!")
+        except Exception as e:
+            print(f"Could not connect to Pebble watch: {e}")
+            print("Continuing without Pebble. Use the [Enter] key to trigger the session.")
+            self._pebble = None
+            self._notifications = None
 
     def _get_frame_picamera(self):
         """Captures a frame from Picamera2, converts, and encodes it."""
@@ -347,7 +354,8 @@ class PebbleLiveSession:
                 tg.create_task(self.play_audio())
 
                 print("\n>>> Gemini Live session started. Speak your question. <<<")
-                self._notifications.send_notification("Gemini Live", "Session Active", "Raspberry Pi")
+                if self._notifications:
+                    self._notifications.send_notification("Gemini Live", "Session Active", "Raspberry Pi")
 
         except (asyncio.CancelledError, asyncio.ExceptionGroup):
             print("\nLive session task group cancelled.")
@@ -374,7 +382,8 @@ class PebbleLiveSession:
         self.is_session_running = False
         self._session_future = None
         print("\n>>> Gemini Live session ended. Ready for next command. <<<")
-        self._notifications.send_notification("Gemini Live", "Session Ended", "Raspberry Pi")
+        if self._notifications:
+            self._notifications.send_notification("Gemini Live", "Session Ended", "Raspberry Pi")
 
     def _raw_packet_handler(self, packet):
         """Handles raw packets from the Pebble to start/stop the session."""
@@ -412,19 +421,31 @@ class PebbleLiveSession:
         loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         loop_thread.start()
 
-        print("Registering raw packet handler...")
-        self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
+        pebble_thread = None
+        if self._pebble:
+            print("Registering raw packet handler...")
+            self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
 
-        print("\nReady. Press the SELECT (middle) button on your Pebble to start a Gemini Live session.")
-        print("Press it a second time to stop the session.")
-        print("Alternatively, press [Enter] in this terminal to simulate a button press.")
-        
-        pebble_thread = threading.Thread(target=self._pebble.run_sync)
-        pebble_thread.daemon = True
-        pebble_thread.start()
+            print("\nReady. Press the SELECT (middle) button on your Pebble to start a Gemini Live session.")
+            print("Press it a second time to stop the session.")
+            print("Alternatively, press [Enter] in this terminal to simulate a button press.")
+            
+            pebble_thread = threading.Thread(target=self._pebble.run_sync)
+            pebble_thread.daemon = True
+            pebble_thread.start()
+        else:
+            print("\nReady. Press [Enter] in this terminal to start a Gemini Live session.")
+            print("Press [Enter] again to stop the session.")
 
-        while pebble_thread.is_alive():
+        # Listen for keyboard input in the main thread
+        while True:
             try:
+                # If we are connected to a pebble, exit when its thread dies.
+                # Otherwise, this loop runs until the user presses Ctrl+C.
+                if pebble_thread and not pebble_thread.is_alive():
+                    print("Pebble connection lost. Exiting.")
+                    break
+                
                 input()
                 print("\n>>> [Enter] key pressed! Simulating button press...")
                 self._toggle_session()
@@ -459,18 +480,16 @@ def main():
         trigger.connect()
         trigger.run()
     except Exception as e:
-        if "No such file or directory" in str(e) and PEBBLE_SERIAL_PORT in str(e):
-            discover_and_setup()
-        elif "Invalid input device" in str(e) or "No Default Input Device Available" in str(e):
+        # Generic error handling now that Pebble connection is handled internally.
+        if "Invalid input device" in str(e) or "No Default Input Device Available" in str(e):
             print("\nError: Could not find a valid microphone.")
             print("Please ensure a microphone is connected and configured.")
-        elif "PortAudio" in str(e):
+        elif "PortAudio" in str(e) or "portaudio.h" in str(e):
              print("\nError: PortAudio library not found or could not be initialized.")
-             print("Please install it with 'sudo apt-get install libportaudio2' and ensure a microphone is connected.")
+             print("Please install it and its development headers with 'sudo apt-get install libportaudio2 portaudio19-dev' and ensure a microphone is connected.")
         else:
             print(f"\nA critical error occurred: {e}")
             traceback.print_exc()
-            print("If this is your first time, the Pebble may not be paired correctly.")
     finally:
         trigger.shutdown()
 
