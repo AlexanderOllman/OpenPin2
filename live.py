@@ -298,7 +298,7 @@ class PebbleLiveSession:
         while self.is_session_running:
             try:
                 msg = await self._out_queue.get()
-                await self._session.send(input=msg)
+                await self._session.send_realtime_input(input=msg)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -310,12 +310,12 @@ class PebbleLiveSession:
             try:
                 turn = self._session.receive()
                 async for response in turn:
-                    if data := response.data:
-                        self._audio_in_queue.put_nowait(data)
-                    if text := response.text:
-                        print(text, end="", flush=True)
-                
-                # Clear queue on interruption
+                    for part in response.parts:
+                        if part.text:
+                            print(part.text, end="", flush=True)
+                        if hasattr(part, 'inline_data') and part.inline_data.data:
+                            self._audio_in_queue.put_nowait(part.inline_data.data)
+
                 while not self._audio_in_queue.empty():
                     self._audio_in_queue.get_nowait()
             except asyncio.CancelledError:
