@@ -77,7 +77,7 @@ SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 
-MODEL = "models/gemini-1.5-flash-latest"
+MODEL = "gemini-1.5-pro-latest"
 
 DEFAULT_MODE = "camera"
 
@@ -332,7 +332,7 @@ class AudioLoop:
 
         except asyncio.CancelledError:
             pass
-        except asyncio.ExceptionGroup as EG:
+        except ExceptionGroup as EG:
             traceback.print_exception(EG)
         finally:
             if self.audio_stream:
