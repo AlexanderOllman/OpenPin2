@@ -1,498 +1,352 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-This script runs on a Raspberry Pi and uses a Pebble watch as a remote
-trigger for the Pi Camera. When a button is pressed on the Pebble, this
-script starts a real-time, multimodal session with Google's Gemini API.
+## Setup
 
----------------------------
---- IMPORTANT: PEBBLE SETUP ---
----------------------------
-Before running this script for the first time, you must manually pair your
-Pebble watch with the Raspberry Pi. This is a one-time setup.
+To install the dependencies for this script, run:
 
-1.  INSTALL BLUETOOTH TOOLS:
-    sudo apt-get update && sudo apt-get install blueman
+``` 
+pip install google-genai opencv-python pyaudio pillow mss
+```
 
-2.  START THE BLUETOETOOTH COMMAND-LINE TOOL:
-    sudo bluetoothctl
+Before running this script, ensure the `GOOGLE_API_KEY` environment
+variable is set to the api-key you obtained from Google AI Studio.
 
-3.  IN THE BLUETOOTH SHELL, TYPE THE FOLLOWING COMMANDS:
-    (This makes the Pi discoverable and scans for nearby devices)
-    
-    agent on
-    default-agent
-    scan on
+For Raspberry Pi, ensure the camera is enabled and configured to work with
+OpenCV. You may need to enable the legacy camera support via `raspi-config`
+for `cv2.VideoCapture(0)` to work.
 
-4.  FIND YOUR WATCH:
-    After a few seconds, you will see a list of devices. Find your
-    Pebble. It will look something like "Pebble Time XXYY". Note the
-    MAC address (e.g., 00:11:22:33:AA:BB).
+Important: **Use headphones or a separate speaker**. This script uses the
+system default audio input and output, which often won't include echo
+cancellation. So to prevent the model from interrupting itself it is
+important that you use headphones or a speaker that is not close to the
+microphone.
 
-5.  PAIR AND TRUST THE WATCH:
-    Replace [mac_address] with your watch's address.
-    
-    pair [mac_address]
-    trust [mac_address]
+## Run
 
-    A prompt will appear on both the Pi and the Pebble. Confirm that the
-    pairing codes match on both devices.
+To run the script:
 
-6.  EXIT BLUETOOTHCTL:
-    disconnect [mac_address]
-    exit
+```
+python live.py
+```
 
-7.  BIND THE WATCH TO A SERIAL PORT:
-    This makes the paired watch available at a consistent system path.
-    This command must be run each time the Pi reboots, so it's a good
-    idea to add it to a startup script (like /etc/rc.local).
-    
-    sudo rfcomm bind 0 [mac_address] 1
-
-After completing these steps, you are ready to run this Python script.
-
--------------------------
---- PYTHON REQUIREMENTS ---
--------------------------
-You will need to install the following libraries in your virtual environment:
-pip install libpebble2 google-generativeai pyaudio Pillow "taskgroup;python_version<'3.11'" "exceptiongroup;python_version<'3.11'"
-
-And install system dependencies for audio:
-sudo apt-get install libportaudio2 portaudio19-dev
-
-PEBBLE MAC ADDRESS: 51:7E:64:C0:B6:5E
+The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
+The default is "camera".
 """
-import time
-import os
-import sys
-import threading
-import subprocess
-import re
+
 import asyncio
 import base64
 import io
+import os
+import sys
 import traceback
+import subprocess
 
-try:
-    from picamera2 import Picamera2
-except ImportError:
-    sys.exit("Could not import picamera2. If in a virtual environment, run 'pip install picamera2'. Otherwise, run 'sudo apt install -y python3-picamera2'")
+import cv2
+import pyaudio
+import PIL.Image
+import mss
 
-try:
-    from google import genai
-except ImportError:
-    sys.exit("Could not import google.genai. Run 'pip install google-generativeai'")
+import argparse
 
-try:
-    import pyaudio
-    import PIL.Image
-except ImportError:
-    sys.exit("Could not import audio/image libraries. Please run 'pip install pyaudio Pillow'.")
+from google import genai
 
 if sys.version_info < (3, 11, 0):
     import taskgroup, exceptiongroup
+
     asyncio.TaskGroup = taskgroup.TaskGroup
     asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
 
-try:
-    from libpebble2.communication import PebbleConnection
-    from libpebble2.communication.transports.serial import SerialTransport
-    from libpebble2.services.notifications import Notifications
-except ImportError:
-    sys.exit("Could not import libpebble2. Run 'pip install libpebble2'")
-
-
-# --- Configuration ---
-API_KEY = os.getenv("GOOGLE_API_KEY")
-if not API_KEY:
-    raise ValueError("GOOGLE_API_KEY environment variable not set.")
-
-# Use the new Live model
-MODEL_ID = "models/gemini-2.0-flash-live-001"
-# This is the serial port created by the `rfcomm bind` command.
-PEBBLE_SERIAL_PORT = "/dev/rfcomm0"
-
-# This is the raw byte sequence discovered to correspond to the middle button.
-MIDDLE_BUTTON_PACKET = b'\x00\x11\x004\x01\xde\xc0BL\x06%Hx\xb1\xf2\x14~W\xe86\x88'
-
-# Audio settings from the example
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 
-# --- Gemini Client Setup ---
-# Using v1beta for the Live API
-client = genai.Client(api_key=API_KEY, http_options={"api_version": "v1beta"})
-LIVE_SESSION_CONFIG = {"response_modalities": ["AUDIO"]}
+MODEL = "models/gemini-1.5-flash-latest"
+
+DEFAULT_MODE = "camera"
+
+client = genai.Client(http_options={"api_version": "v1beta"})
+
+CONFIG = {"response_modalities": ["AUDIO"]}
+
 pya = pyaudio.PyAudio()
 
 
-def discover_and_setup():
-    """
-    Scans for Bluetooth devices, allows the user to select a Pebble,
-    and prints the necessary setup commands.
-    """
-    print("Could not connect to a paired Pebble. Starting discovery...")
-    pebbles = {}
+def check_bluetooth_audio():
+    """Checks if a Bluetooth audio device is connected."""
+    print("Checking for Bluetooth audio device...")
     try:
-        # Use a subprocess to run bluetoothctl and scan for devices
-        print("Scanning for Bluetooth devices for 10 seconds...")
-        proc = subprocess.Popen(['sudo', 'bluetoothctl'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        
-        # We need to read and parse the output in real-time
-        proc.stdin.write("scan on\n")
-        proc.stdin.flush()
-        
-        time.sleep(10) # Scan for 10 seconds
-        
-        proc.stdin.write("scan off\n")
-        proc.stdin.flush()
-        
-        proc.stdin.write("exit\n")
-        proc.stdin.flush()
-        
-        output, _ = proc.communicate()
+        # Use pactl to list sinks and check for bluez (common for bluetooth devices)
+        result = subprocess.run(
+            "pactl list sinks", shell=True, capture_output=True, text=True
+        )
 
-        # Parse the output to find Pebble devices
-        for line in output.split('\n'):
-            if 'Pebble' in line:
-                mac_match = re.search(r'([0-9A-F]{2}:){5}[0-9A-F]{2}', line)
-                if mac_match:
-                    mac_address = mac_match.group(0)
-                    device_name = line.split(mac_address)[1].strip()
-                    pebbles[mac_address] = device_name
-    
+        if result.returncode != 0:
+            print("Could not run `pactl`. Is PulseAudio or PipeWire running?")
+            print("Assuming no Bluetooth audio device is connected.")
+            return False
+
+        if "bluez" in result.stdout.lower():
+            print("Bluetooth audio device found.")
+            return True
+        else:
+            print("No Bluetooth audio sink found. Please connect a Bluetooth audio device.")
+            return False
     except FileNotFoundError:
-        print("Error: 'bluetoothctl' not found. Please install bluetooth tools with 'sudo apt-get install blueman'")
-        return
-    except Exception as e:
-        print(f"An error occurred during Bluetooth scan: {e}")
-        return
-
-    if not pebbles:
-        print("\nNo Pebble watches found. Make sure your watch is on and discoverable.")
-        return
-
-    print("\n--- Found Pebble Watches ---")
-    devices = list(pebbles.items())
-    for i, (mac, name) in enumerate(devices):
-        print(f"{i+1}: {name} ({mac})")
-    print("--------------------------")
-
-    try:
-        choice = int(input("Select a watch to pair with (enter number): ")) - 1
-        if not 0 <= choice < len(devices):
-            print("Invalid selection.")
-            return
-        
-        selected_mac, selected_name = devices[choice]
-        print(f"\nYou selected: {selected_name}")
-        
-    except (ValueError, IndexError):
-        print("Invalid input.")
-        return
-
-    print("\n--- REQUIRED SETUP COMMANDS ---")
-    print("Please run the following commands in another terminal to pair and bind your watch.")
-    print("You will only need to do this once.")
-    print("\n1. Pair and Trust the device:")
-    print(f"   sudo bluetoothctl pair {selected_mac}")
-    print(f"   sudo bluetoothctl trust {selected_mac}")
-    print("\n   (Confirm the pairing code on your watch and in the terminal if prompted)")
-    print("\n2. Bind the watch to a serial port (run this after every reboot):")
-    print(f"   sudo rfcomm bind 0 {selected_mac} 1")
-    print("\nAfter running these commands, start this script again.")
+        print(
+            "Could not check for Bluetooth audio devices. `pactl` command not found."
+        )
+        print(
+            "Please ensure 'pactl' is available (from pulseaudio-utils) and a Bluetooth speaker is connected."
+        )
+        return False
 
 
-class PebbleLiveSession:
-    """
-    Manages the connection to the Pebble and the Gemini Live session.
-    """
-    def __init__(self):
-        self._pebble = None
-        self._notifications = None
-        self._picam2 = Picamera2()
-        
-        self.is_session_running = False
-        self._session_future = None
-        self._loop = None
-        
-        # For the live session
-        self._session = None
-        self._audio_in_queue = None
-        self._out_queue = None
-        self._audio_stream = None
+class AudioLoop:
+    def __init__(self, video_mode=DEFAULT_MODE):
+        self.video_mode = video_mode
+        self.output_modality = "AUDIO"
 
-    def connect(self):
-        """
-        Initializes the camera and attempts to connect to the Pebble watch.
-        If the watch is not found, it continues allowing for keyboard-only control.
-        """
-        # --- Camera Setup ---
-        print("Initializing camera...")
-        config = self._picam2.create_still_configuration(main={"size": (1280, 720)})
-        self._picam2.configure(config)
-        print("Camera ready.")
+        self.audio_in_queue = None
+        self.out_queue = None
 
-        # --- Pebble Connection ---
-        try:
-            print(f"Connecting to Pebble on {PEBBLE_SERIAL_PORT}...")
-            self._pebble = PebbleConnection(SerialTransport(PEBBLE_SERIAL_PORT))
-            self._pebble.connect()
-            self._notifications = Notifications(self._pebble)
-            print("Pebble connected successfully!")
-        except Exception as e:
-            print(f"Could not connect to Pebble watch: {e}")
-            print("Continuing without Pebble. Use the [Enter] key to trigger the session.")
-            self._pebble = None
-            self._notifications = None
+        self.session = None
 
-    def _get_frame_picamera(self):
-        """Captures a frame from Picamera2, converts, and encodes it."""
-        frame_array = self._picam2.capture_array()
-        img = PIL.Image.fromarray(frame_array)
+        self.send_text_task = None
+        self.receive_audio_task = None
+        self.play_audio_task = None
+        self.audio_stream = None
+
+    async def send_text(self):
+        print('Enter "1" for audio output (default), "2" for text output.')
+        while True:
+            text = await asyncio.to_thread(
+                input,
+                "message > ",
+            )
+            if text.lower() == "q":
+                break
+
+            if text == "1":
+                if self.output_modality != "AUDIO":
+                    print("Switched to AUDIO output.")
+                    self.output_modality = "AUDIO"
+                else:
+                    print("Audio output is already enabled.")
+                continue
+
+            if text == "2":
+                if self.output_modality != "TEXT":
+                    print("Switched to TEXT only output.")
+                    self.output_modality = "TEXT"
+                else:
+                    print("Text only output is already enabled.")
+                continue
+
+            config = {"response_modalities": [self.output_modality]}
+            await self.session.send(input=text or ".", end_of_turn=True, config=config)
+
+    def _get_frame(self, cap):
+        # Read the frame
+        ret, frame = cap.read()
+        # Check if the frame was read successfully
+        if not ret:
+            return None
+        # Fix: Convert BGR to RGB color space
+        # OpenCV captures in BGR but PIL expects RGB format
+        # This prevents the blue tint in the video feed
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = PIL.Image.fromarray(frame_rgb)  # Now using RGB frame
         img.thumbnail([1024, 1024])
 
         image_io = io.BytesIO()
         img.save(image_io, format="jpeg")
         image_io.seek(0)
 
+        mime_type = "image/jpeg"
         image_bytes = image_io.read()
-        return {"mime_type": "image/jpeg", "data": base64.b64encode(image_bytes).decode()}
+        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
 
     async def get_frames(self):
-        """Async task to capture frames from the camera."""
-        self._picam2.start()
-        time.sleep(2)  # Allow camera to warm up
-        while self.is_session_running:
-            try:
-                frame = await asyncio.to_thread(self._get_frame_picamera)
-                await self._out_queue.put(frame)
-                await asyncio.sleep(1.0)  # 1 FPS
-            except Exception as e:
-                print(f"Error getting frame: {e}")
-                break
-        if self._picam2.started:
-            self._picam2.stop()
+        # This takes about a second, and will block the whole program
+        # causing the audio pipeline to overflow if you don't to_thread it.
+        cap = await asyncio.to_thread(
+            cv2.VideoCapture, 0
+        )  # 0 represents the default camera
 
-    async def listen_audio(self):
-        """Async task to listen to the microphone."""
-        mic_info = pya.get_default_input_device_info()
-        self._audio_stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT, channels=CHANNELS, rate=SEND_SAMPLE_RATE,
-            input=True, input_device_index=mic_info["index"],
-            frames_per_buffer=CHUNK_SIZE
-        )
-        print("Audio recording started.")
-        while self.is_session_running:
-            try:
-                data = await asyncio.to_thread(self._audio_stream.read, CHUNK_SIZE, exception_on_overflow=False)
-                await self._out_queue.put({"data": data, "mime_type": "audio/pcm"})
-            except (IOError, asyncio.CancelledError):
-                break # Stop on error or cancellation
-        print("Audio recording stopped.")
+        if not cap.isOpened():
+            print("Error: Cannot open camera.", file=sys.stderr)
+            print(
+                "If you are on a Raspberry Pi, please ensure the camera is enabled "
+                "and the legacy camera stack is activated (`sudo raspi-config`).",
+                file=sys.stderr,
+            )
+            return
+
+        while True:
+            frame = await asyncio.to_thread(self._get_frame, cap)
+            if frame is None:
+                break
+
+            await asyncio.sleep(1.0)
+
+            await self.out_queue.put(frame)
+
+        # Release the VideoCapture object
+        cap.release()
+
+    def _get_screen(self):
+        sct = mss.mss()
+        monitor = sct.monitors[0]
+
+        i = sct.grab(monitor)
+
+        mime_type = "image/jpeg"
+        image_bytes = mss.tools.to_png(i.rgb, i.size)
+        img = PIL.Image.open(io.BytesIO(image_bytes))
+
+        image_io = io.BytesIO()
+        img.save(image_io, format="jpeg")
+        image_io.seek(0)
+
+        image_bytes = image_io.read()
+        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
+
+    async def get_screen(self):
+
+        while True:
+            frame = await asyncio.to_thread(self._get_screen)
+            if frame is None:
+                break
+
+            await asyncio.sleep(1.0)
+
+            await self.out_queue.put(frame)
 
     async def send_realtime(self):
-        """Async task to send data from the queue to Gemini."""
-        while self.is_session_running:
-            try:
-                msg = await self._out_queue.get()
-                await self._session.send_realtime_input(input=msg)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Error sending data: {e}")
+        while True:
+            msg = await self.out_queue.get()
+            await self.session.send(input=msg)
+
+    async def listen_audio(self):
+        mic_info = pya.get_default_input_device_info()
+        self.audio_stream = await asyncio.to_thread(
+            pya.open,
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=SEND_SAMPLE_RATE,
+            input=True,
+            input_device_index=mic_info["index"],
+            frames_per_buffer=CHUNK_SIZE,
+        )
+        if __debug__:
+            kwargs = {"exception_on_overflow": False}
+        else:
+            kwargs = {}
+        while True:
+            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
+            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
     async def receive_audio(self):
-        """Async task to receive responses from Gemini."""
-        while self.is_session_running:
-            try:
-                turn = self._session.receive()
-                async for response in turn:
-                    for part in response.parts:
-                        if part.text:
-                            print(part.text, end="", flush=True)
-                        if hasattr(part, 'inline_data') and part.inline_data.data:
-                            self._audio_in_queue.put_nowait(part.inline_data.data)
+        "Background task to reads from the websocket and write pcm chunks to the output queue"
+        while True:
+            turn = self.session.receive()
+            async for response in turn:
+                if data := response.data:
+                    self.audio_in_queue.put_nowait(data)
+                    continue
+                if text := response.text:
+                    print(text, end="")
 
-                while not self._audio_in_queue.empty():
-                    self._audio_in_queue.get_nowait()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Error receiving audio: {e}")
+            # If you interrupt the model, it sends a turn_complete.
+            # For interruptions to work, we need to stop playback.
+            # So empty out the audio queue because it may have loaded
+            # much more audio than has played yet.
+            while not self.audio_in_queue.empty():
+                self.audio_in_queue.get_nowait()
 
     async def play_audio(self):
-        """Async task to play back audio from Gemini."""
         stream = await asyncio.to_thread(
-            pya.open, format=FORMAT, channels=CHANNELS, rate=RECEIVE_SAMPLE_RATE, output=True
+            pya.open,
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RECEIVE_SAMPLE_RATE,
+            output=True,
         )
-        while self.is_session_running:
-            try:
-                bytestream = await self._audio_in_queue.get()
-                await asyncio.to_thread(stream.write, bytestream)
-            except asyncio.CancelledError:
-                break
-        stream.close()
+        while True:
+            bytestream = await self.audio_in_queue.get()
+            await asyncio.to_thread(stream.write, bytestream)
 
-    async def run_live_session(self):
-        """The main async method that orchestrates the live session."""
+    async def run(self):
         try:
             async with (
-                client.aio.live.connect(model=MODEL_ID, config=LIVE_SESSION_CONFIG) as session,
+                client.aio.live.connect(model=MODEL, config=CONFIG) as session,
                 asyncio.TaskGroup() as tg,
             ):
-                self._session = session
-                self._audio_in_queue = asyncio.Queue()
-                self._out_queue = asyncio.Queue(maxsize=10)
+                self.session = session
 
+                self.audio_in_queue = asyncio.Queue()
+                self.out_queue = asyncio.Queue(maxsize=5)
+
+                send_text_task = tg.create_task(self.send_text())
                 tg.create_task(self.send_realtime())
                 tg.create_task(self.listen_audio())
-                tg.create_task(self.get_frames())
+                if self.video_mode == "camera":
+                    tg.create_task(self.get_frames())
+                elif self.video_mode == "screen":
+                    tg.create_task(self.get_screen())
+
                 tg.create_task(self.receive_audio())
                 tg.create_task(self.play_audio())
 
-                print("\n>>> Gemini Live session started. Speak your question. <<<")
-                if self._notifications:
-                    self._notifications.send_notification("Gemini Live", "Session Active", "Raspberry Pi")
+                await send_text_task
+                raise asyncio.CancelledError("User requested exit")
 
-        except (asyncio.CancelledError, asyncio.ExceptionGroup):
-            print("\nLive session task group cancelled.")
-        except Exception as e:
-            print(f"An error occurred in the live session: {e}")
-            traceback.print_exc()
-        finally:
-            if self._audio_stream and self._audio_stream.is_active():
-                self._audio_stream.stop_stream()
-                self._audio_stream.close()
-            print("Live session cleanup complete.")
-            # This will trigger the _session_done_callback
-            self.is_session_running = False
-
-    def _session_done_callback(self, future):
-        """Callback executed when the session future completes."""
-        try:
-            future.result()
         except asyncio.CancelledError:
-            print("Session cancelled by user.")
-        except Exception as e:
-            print(f"Live session ended with an error: {e}")
-        
-        self.is_session_running = False
-        self._session_future = None
-        print("\n>>> Gemini Live session ended. Ready for next command. <<<")
-        if self._notifications:
-            self._notifications.send_notification("Gemini Live", "Session Ended", "Raspberry Pi")
-
-    def _raw_packet_handler(self, packet):
-        """Handles raw packets from the Pebble to start/stop the session."""
-        if packet == MIDDLE_BUTTON_PACKET:
-            self._toggle_session()
-
-    def _toggle_session(self):
-        """Starts or stops the Gemini Live session."""
-        if not self.is_session_running:
-            if not self._loop:
-                print("Error: Event loop is not running.")
-                return
-            
-            print("\n>>> Middle button press detected! Starting Gemini Live session...")
-            self.is_session_running = True
-            coro = self.run_live_session()
-            self._session_future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-            self._session_future.add_done_callback(self._session_done_callback)
-        else:
-            print("\n>>> Middle button press detected! Stopping Gemini Live session...")
-            if self._session_future:
-                # This signals all async tasks to stop
-                self.is_session_running = False
-                # And cancels the main task group
-                self._loop.call_soon_threadsafe(self._session_future.cancel)
-
-    def run(self):
-        """
-        Registers handlers, starts the asyncio event loop in a background thread,
-        and listens for Pebble events and keyboard input.
-        """
-        # Start asyncio event loop in a background thread
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        loop_thread.start()
-
-        pebble_thread = None
-        if self._pebble:
-            print("Registering raw packet handler...")
-            self._pebble.register_raw_inbound_handler(self._raw_packet_handler)
-
-            print("\nReady. Press the SELECT (middle) button on your Pebble to start a Gemini Live session.")
-            print("Press it a second time to stop the session.")
-            print("Alternatively, press [Enter] in this terminal to simulate a button press.")
-            
-            pebble_thread = threading.Thread(target=self._pebble.run_sync)
-            pebble_thread.daemon = True
-            pebble_thread.start()
-        else:
-            print("\nReady. Press [Enter] in this terminal to start a Gemini Live session.")
-            print("Press [Enter] again to stop the session.")
-
-        # Listen for keyboard input in the main thread
-        while True:
-            try:
-                # If we are connected to a pebble, exit when its thread dies.
-                # Otherwise, this loop runs until the user presses Ctrl+C.
-                if pebble_thread and not pebble_thread.is_alive():
-                    print("Pebble connection lost. Exiting.")
-                    break
-                
-                input()
-                print("\n>>> [Enter] key pressed! Simulating button press...")
-                self._toggle_session()
-            except (KeyboardInterrupt, EOFError):
-                print("\nExiting...")
-                break
-
-    def shutdown(self):
-        """Cleans up resources gracefully."""
-        print("\nShutting down...")
-        if self._session_future and not self._session_future.done():
-            self._loop.call_soon_threadsafe(self._session_future.cancel)
-        
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        
-        if self._pebble and self._pebble.connected:
-            self._pebble.disconnect()
-            print("Pebble disconnected.")
-
-        # PyAudio termination
-        pya.terminate()
-        print("PyAudio terminated.")
-
-        if hasattr(self, '_picam2') and self._picam2.started:
-            self._picam2.stop()
-            print("Camera stopped.")
-
-def main():
-    trigger = PebbleLiveSession()
-    try:
-        trigger.connect()
-        trigger.run()
-    except Exception as e:
-        # Generic error handling now that Pebble connection is handled internally.
-        if "Invalid input device" in str(e) or "No Default Input Device Available" in str(e):
-            print("\nError: Could not find a valid microphone.")
-            print("Please ensure a microphone is connected and configured.")
-        elif "PortAudio" in str(e) or "portaudio.h" in str(e):
-             print("\nError: PortAudio library not found or could not be initialized.")
-             print("Please install it and its development headers with 'sudo apt-get install libportaudio2 portaudio19-dev' and ensure a microphone is connected.")
-        else:
-            print(f"\nA critical error occurred: {e}")
-            traceback.print_exc()
-    finally:
-        trigger.shutdown()
+            pass
+        except asyncio.ExceptionGroup as EG:
+            traceback.print_exception(EG)
+        finally:
+            if self.audio_stream:
+                self.audio_stream.close()
 
 
 if __name__ == "__main__":
-    main() 
+    input("Press Enter to start the Gemini Live session...")
+
+    if not check_bluetooth_audio():
+        print("Exiting.", file=sys.stderr)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=DEFAULT_MODE,
+        help="pixels to stream from",
+        choices=["camera", "screen", "none"],
+    )
+    args = parser.parse_args()
+    main = AudioLoop(video_mode=args.mode)
+    try:
+        asyncio.run(main.run())
+    except KeyboardInterrupt:
+        print("\nSession ended by user.")
+    finally:
+        pya.terminate()
