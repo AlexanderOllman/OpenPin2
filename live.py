@@ -55,6 +55,7 @@ import os
 import sys
 import traceback
 import subprocess
+from contextlib import contextmanager
 
 import cv2
 import pyaudio
@@ -64,6 +65,17 @@ import mss
 import argparse
 
 from google import genai
+
+@contextmanager
+def suppress_stderr():
+    """A context manager that redirects stderr to devnull"""
+    with open(os.devnull, "w") as fnull:
+        original_stderr = sys.stderr
+        sys.stderr = fnull
+        try:
+            yield
+        finally:
+            sys.stderr = original_stderr
 
 if sys.version_info < (3, 11, 0):
     import taskgroup, exceptiongroup
@@ -77,7 +89,7 @@ SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 
-MODEL = "gemini-1.5-pro-latest"
+MODEL = "models/gemini-1.5-flash"
 
 DEFAULT_MODE = "camera"
 
@@ -85,7 +97,8 @@ client = genai.Client(http_options={"api_version": "v1beta"})
 
 CONFIG = {"response_modalities": ["AUDIO"]}
 
-pya = pyaudio.PyAudio()
+with suppress_stderr():
+    pya = pyaudio.PyAudio()
 
 
 def check_bluetooth_audio():
