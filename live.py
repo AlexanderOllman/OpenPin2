@@ -145,8 +145,13 @@ class AudioLoop:
 
             if text == "1":
                 if self.output_modality != "AUDIO":
-                    print("Switched to AUDIO output.")
-                    self.output_modality = "AUDIO"
+                    if await asyncio.to_thread(check_bluetooth_audio):
+                        print("Switched to AUDIO output.")
+                        self.output_modality = "AUDIO"
+                    else:
+                        print(
+                            "Failed to switch to AUDIO output. No Bluetooth audio device found."
+                        )
                 else:
                     print("Audio output is already enabled.")
                 continue
@@ -294,6 +299,13 @@ class AudioLoop:
             await asyncio.to_thread(stream.write, bytestream)
 
     async def run(self):
+        if self.output_modality == "AUDIO":
+            if not check_bluetooth_audio():
+                print(
+                    "Bluetooth audio device not found. Defaulting to TEXT output.",
+                    file=sys.stderr,
+                )
+                self.output_modality = "TEXT"
         try:
             async with (
                 client.aio.live.connect(model=MODEL, config=CONFIG) as session,
@@ -329,10 +341,6 @@ class AudioLoop:
 
 if __name__ == "__main__":
     input("Press Enter to start the Gemini Live session...")
-
-    if not check_bluetooth_audio():
-        print("Exiting.", file=sys.stderr)
-        sys.exit(1)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
