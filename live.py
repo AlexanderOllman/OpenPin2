@@ -1,271 +1,152 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
-## Setup
+This script runs on a Raspberry Pi and starts a Gemini Live session, streaming
+video from the Pi Camera and audio from a USB microphone.
 
-To install the dependencies for this script, run:
+Pressing 'Enter' in the terminal will start the session.
 
-``` 
-pip install google-genai opencv-python pyaudio pillow mss
-```
+It checks for a connected Bluetooth audio device. If one is found, Gemini's
+responses will be streamed as audio. Otherwise, they will be printed as text.
 
-Before running this script, ensure the `GOOGLE_API_KEY` environment
-variable is set to the api-key you obtained from Google AI Studio.
+This script is a combination of the reference pebble_camera_trigger_button.py
+and the Gemini Live API example provided.
 
-For Raspberry Pi, ensure the camera is enabled and configured to work with
-OpenCV. You may need to enable the legacy camera support via `raspi-config`
-for `cv2.VideoCapture(0)` to work.
+--- REQUIREMENTS ---
+You will need to install the following libraries:
+pip install google-generativeai "google-generativeai<0.7" pillow
+pip install picamera2 pyaudio
 
-Important: **Use headphones or a separate speaker**. This script uses the
-system default audio input and output, which often won't include echo
-cancellation. So to prevent the model from interrupting itself it is
-important that you use headphones or a speaker that is not close to the
-microphone.
+You may need to install portaudio for PyAudio:
+sudo apt-get install portaudio19-dev
 
-## Run
-
-To run the script:
-
-```
-python live.py
-```
-
-The script takes a video-mode flag `--mode`, this can be "camera", "screen", or "none".
-The default is "camera".
+Ensure the GOOGLE_API_KEY environment variable is set.
+export GOOGLE_API_KEY="your-api-key"
 """
-
 import asyncio
 import base64
 import io
 import os
 import sys
-import traceback
 import subprocess
-from contextlib import contextmanager
+import traceback
 
-import cv2
-import pyaudio
-import PIL.Image
-import mss
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    sys.exit("Could not import picamera2. Run 'pip install picamera2'.")
 
-import argparse
+try:
+    import PIL.Image
+except ImportError:
+    sys.exit("Could not import Pillow. Run 'pip install pillow'.")
 
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    sys.exit("Could not import google.genai. Run 'pip install google-generativeai \"google-generativeai<0.7\"'.")
 
-@contextmanager
-def suppress_stderr():
-    """A context manager that redirects stderr to devnull"""
-    with open(os.devnull, "w") as fnull:
-        original_stderr = sys.stderr
-        sys.stderr = fnull
-        try:
-            yield
-        finally:
-            sys.stderr = original_stderr
+try:
+    import pyaudio
+except ImportError:
+    sys.exit("Could not import pyaudio. Run 'pip install pyaudio'. You may also need 'sudo apt-get install portaudio19-dev'")
 
+# --- Compatibility for older Python versions ---
 if sys.version_info < (3, 11, 0):
-    import taskgroup, exceptiongroup
+    try:
+        import taskgroup
+        import exceptiongroup
+        asyncio.TaskGroup = taskgroup.TaskGroup
+        asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
+    except ImportError:
+        sys.exit("For Python < 3.11, please install taskgroup and exceptiongroup: 'pip install taskgroup exceptiongroup'")
 
-    asyncio.TaskGroup = taskgroup.TaskGroup
-    asyncio.ExceptionGroup = exceptiongroup.ExceptionGroup
+# --- Configuration ---
+API_KEY = os.getenv("GOOGLE_API_KEY")
 
+# This model is specified in the user's example for Live API.
+MODEL_ID = "models/gemini-2.0-flash-live-001"
+
+# Audio settings from the example
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
 
-MODEL = "models/gemini-2.0-flash-live-001"
 
-DEFAULT_MODE = "camera"
-
-client = genai.Client(http_options={"api_version": "v1beta"})
-
-CONFIG = {"response_modalities": ["AUDIO"]}
-
-with suppress_stderr():
-    pya = pyaudio.PyAudio()
-
-
-def check_bluetooth_audio():
-    """Checks if a Bluetooth audio device is connected."""
+def check_for_bluetooth_audio():
+    """Checks if a Bluetooth audio sink is available using pactl."""
     print("Checking for Bluetooth audio device...")
     try:
-        # Use pactl to list sinks and check for bluez (common for bluetooth devices)
-        result = subprocess.run(
-            "pactl list sinks", shell=True, capture_output=True, text=True
-        )
-
-        if result.returncode != 0:
-            print("Could not run `pactl`. Is PulseAudio or PipeWire running?")
-            print("Assuming no Bluetooth audio device is connected.")
-            return False
-
-        if "bluez" in result.stdout.lower():
+        output = subprocess.check_output(['pactl', 'list', 'sinks'], text=True)
+        if 'bluez' in output:
             print("Bluetooth audio device found.")
             return True
         else:
-            print("No Bluetooth audio sink found. Please connect a Bluetooth audio device.")
+            print("No Bluetooth audio device found. Defaulting to text output.")
             return False
-    except FileNotFoundError:
-        print(
-            "Could not check for Bluetooth audio devices. `pactl` command not found."
-        )
-        print(
-            "Please ensure 'pactl' is available (from pulseaudio-utils) and a Bluetooth speaker is connected."
-        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(f"Warning: 'pactl' command failed: {e}. Assuming no Bluetooth audio.")
+        print("Audio output will be disabled.")
         return False
 
 
-class AudioLoop:
-    def __init__(self, video_mode=DEFAULT_MODE):
-        self.video_mode = video_mode
-        self.output_modality = "AUDIO"
+class GeminiLiveSession:
+    """
+    Manages the connection to Gemini Live, capturing and streaming video and audio.
+    """
+    def __init__(self):
+        if not API_KEY:
+            raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
-        self.audio_in_queue = None
-        self.out_queue = None
+        self.client = genai.Client(api_key=API_KEY, http_options={"api_version": "v1beta"})
+        self.picam2 = Picamera2()
+        self.pya = pyaudio.PyAudio()
+
+        self.has_bt_audio = check_for_bluetooth_audio()
+        self.config = {"response_modalities": ["AUDIO"] if self.has_bt_audio else ["TEXT"]}
 
         self.session = None
+        self.audio_in_queue = None  # For received audio
+        self.realtime_out_queue = None # For sending audio/video
 
-        self.send_text_task = None
-        self.receive_audio_task = None
-        self.play_audio_task = None
-        self.audio_stream = None
+        self.audio_stream_in = None
 
-    async def send_text(self):
-        print('Enter "1" for audio output (default), "2" for text output.')
-        while True:
-            text = await asyncio.to_thread(
-                input,
-                "message > ",
-            )
-            if text.lower() == "q":
-                break
+    def _setup_camera(self):
+        """Initializes and configures the PiCamera."""
+        print("Initializing camera...")
+        video_config = self.picam2.create_video_configuration(main={"size": (800, 600), "format": "RGB888"})
+        self.picam2.configure(video_config)
+        self.picam2.start()
+        print("Camera ready.")
 
-            if text == "1":
-                if self.output_modality != "AUDIO":
-                    if await asyncio.to_thread(check_bluetooth_audio):
-                        print("Switched to AUDIO output.")
-                        self.output_modality = "AUDIO"
-                    else:
-                        print(
-                            "Failed to switch to AUDIO output. No Bluetooth audio device found."
-                        )
-                else:
-                    print("Audio output is already enabled.")
-                continue
-
-            if text == "2":
-                if self.output_modality != "TEXT":
-                    print("Switched to TEXT only output.")
-                    self.output_modality = "TEXT"
-                else:
-                    print("Text only output is already enabled.")
-                continue
-
-            config = {"response_modalities": [self.output_modality]}
-            await self.session.send(input=text or ".", end_of_turn=True, config=config)
-
-    def _get_frame(self, cap):
-        # Read the frame
-        ret, frame = cap.read()
-        # Check if the frame was read successfully
-        if not ret:
-            return None
-        # Fix: Convert BGR to RGB color space
-        # OpenCV captures in BGR but PIL expects RGB format
-        # This prevents the blue tint in the video feed
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = PIL.Image.fromarray(frame_rgb)  # Now using RGB frame
+    def _get_jpeg_frame(self):
+        """Captures a frame and encodes it as JPEG."""
+        frame_array = self.picam2.capture_array()
+        img = PIL.Image.fromarray(frame_array)
         img.thumbnail([1024, 1024])
 
         image_io = io.BytesIO()
         img.save(image_io, format="jpeg")
         image_io.seek(0)
-
+        
         mime_type = "image/jpeg"
         image_bytes = image_io.read()
         return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
 
-    async def get_frames(self):
-        # This takes about a second, and will block the whole program
-        # causing the audio pipeline to overflow if you don't to_thread it.
-        cap = await asyncio.to_thread(
-            cv2.VideoCapture, 0
-        )  # 0 represents the default camera
-
-        if not cap.isOpened():
-            print("Error: Cannot open camera.", file=sys.stderr)
-            print(
-                "If you are on a Raspberry Pi, please ensure the camera is enabled "
-                "and the legacy camera stack is activated (`sudo raspi-config`).",
-                file=sys.stderr,
-            )
-            return
-
+    async def _stream_video_frames(self):
+        """Continuously captures frames and puts them in the output queue."""
         while True:
-            frame = await asyncio.to_thread(self._get_frame, cap)
-            if frame is None:
-                break
+            frame = await asyncio.to_thread(self._get_jpeg_frame)
+            await self.realtime_out_queue.put(frame)
+            await asyncio.sleep(1.0) # Send one frame per second
 
-            await asyncio.sleep(1.0)
-
-            await self.out_queue.put(frame)
-
-        # Release the VideoCapture object
-        cap.release()
-
-    def _get_screen(self):
-        sct = mss.mss()
-        monitor = sct.monitors[0]
-
-        i = sct.grab(monitor)
-
-        mime_type = "image/jpeg"
-        image_bytes = mss.tools.to_png(i.rgb, i.size)
-        img = PIL.Image.open(io.BytesIO(image_bytes))
-
-        image_io = io.BytesIO()
-        img.save(image_io, format="jpeg")
-        image_io.seek(0)
-
-        image_bytes = image_io.read()
-        return {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode()}
-
-    async def get_screen(self):
-
-        while True:
-            frame = await asyncio.to_thread(self._get_screen)
-            if frame is None:
-                break
-
-            await asyncio.sleep(1.0)
-
-            await self.out_queue.put(frame)
-
-    async def send_realtime(self):
-        while True:
-            msg = await self.out_queue.get()
-            await self.session.send(input=msg)
-
-    async def listen_audio(self):
-        mic_info = pya.get_default_input_device_info()
-        self.audio_stream = await asyncio.to_thread(
-            pya.open,
+    async def _stream_audio_chunks(self):
+        """Continuously captures audio and puts it in the output queue."""
+        mic_info = self.pya.get_default_input_device_info()
+        print(f"Using audio input device: {mic_info['name']}")
+        
+        self.audio_stream_in = await asyncio.to_thread(
+            self.pya.open,
             format=FORMAT,
             channels=CHANNELS,
             rate=SEND_SAMPLE_RATE,
@@ -273,35 +154,55 @@ class AudioLoop:
             input_device_index=mic_info["index"],
             frames_per_buffer=CHUNK_SIZE,
         )
-        if __debug__:
-            kwargs = {"exception_on_overflow": False}
-        else:
-            kwargs = {}
-        while True:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
-            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
-    async def receive_audio(self):
-        "Background task to reads from the websocket and write pcm chunks to the output queue"
+        while True:
+            # The exception_on_overflow=False is important on slower devices
+            # to avoid crashing if the buffer overflows.
+            data = await asyncio.to_thread(self.audio_stream_in.read, CHUNK_SIZE, exception_on_overflow=False)
+            await self.realtime_out_queue.put({"data": data, "mime_type": "audio/pcm"})
+
+    async def _send_realtime_data(self):
+        """Sends data from the output queue to the Gemini API."""
+        while True:
+            msg = await self.realtime_out_queue.get()
+            await self.session.send(input=msg)
+    
+    async def _handle_user_text_input(self):
+        """Handles text input from the user to send to the session."""
+        while True:
+            text = await asyncio.to_thread(input, "Enter text to send (or 'q' to quit): ")
+            if text.lower() == "q":
+                break
+            await self.session.send(input=text, end_of_turn=True)
+        # Signal shutdown
+        raise asyncio.CancelledError("User requested exit")
+
+    async def _receive_responses(self):
+        """Receives responses from Gemini and processes them."""
         while True:
             turn = self.session.receive()
             async for response in turn:
                 if data := response.data:
-                    self.audio_in_queue.put_nowait(data)
-                    continue
+                    if self.has_bt_audio:
+                        self.audio_in_queue.put_nowait(data)
                 if text := response.text:
-                    print(text, end="")
+                    print(f"Gemini: {text}", end="", flush=True)
 
-            # If you interrupt the model, it sends a turn_complete.
-            # For interruptions to work, we need to stop playback.
-            # So empty out the audio queue because it may have loaded
-            # much more audio than has played yet.
-            while not self.audio_in_queue.empty():
-                self.audio_in_queue.get_nowait()
+            # Empty the audio queue on turn completion to prevent stale audio
+            # if the model was interrupted.
+            if self.has_bt_audio:
+                while not self.audio_in_queue.empty():
+                    self.audio_in_queue.get_nowait()
+            else:
+                 print() # for a clean newline after text output
 
-    async def play_audio(self):
-        stream = await asyncio.to_thread(
-            pya.open,
+    async def _play_audio_responses(self):
+        """Plays back received audio chunks."""
+        if not self.has_bt_audio:
+            return # Don't run this task if we don't have audio output
+
+        stream_out = await asyncio.to_thread(
+            self.pya.open,
             format=FORMAT,
             channels=CHANNELS,
             rate=RECEIVE_SAMPLE_RATE,
@@ -309,65 +210,74 @@ class AudioLoop:
         )
         while True:
             bytestream = await self.audio_in_queue.get()
-            await asyncio.to_thread(stream.write, bytestream)
+            await asyncio.to_thread(stream_out.write, bytestream)
 
-    async def run(self):
-        if self.output_modality == "AUDIO":
-            if not check_bluetooth_audio():
-                print(
-                    "Bluetooth audio device not found. Defaulting to TEXT output.",
-                    file=sys.stderr,
-                )
-                self.output_modality = "TEXT"
+    async def _start_session(self):
+        """Sets up and runs the concurrent tasks for the session."""
         try:
-            async with (
-                client.aio.live.connect(model=MODEL, config=CONFIG) as session,
-                asyncio.TaskGroup() as tg,
-            ):
+            async with self.client.aio.live.connect(model=MODEL_ID, config=self.config) as session, \
+                       asyncio.TaskGroup() as tg:
                 self.session = session
-
                 self.audio_in_queue = asyncio.Queue()
-                self.out_queue = asyncio.Queue(maxsize=5)
+                self.realtime_out_queue = asyncio.Queue(maxsize=5)
 
-                send_text_task = tg.create_task(self.send_text())
-                tg.create_task(self.send_realtime())
-                tg.create_task(self.listen_audio())
-                if self.video_mode == "camera":
-                    tg.create_task(self.get_frames())
-                elif self.video_mode == "screen":
-                    tg.create_task(self.get_screen())
-
-                tg.create_task(self.receive_audio())
-                tg.create_task(self.play_audio())
-
-                await send_text_task
-                raise asyncio.CancelledError("User requested exit")
+                # Start all the background tasks
+                tg.create_task(self._send_realtime_data())
+                tg.create_task(self._stream_audio_chunks())
+                tg.create_task(self._stream_video_frames())
+                tg.create_task(self._receive_responses())
+                tg.create_task(self._play_audio_responses())
+                
+                # The input handler runs in the foreground of the task group
+                await self._handle_user_text_input()
 
         except asyncio.CancelledError:
-            pass
-        except ExceptionGroup as EG:
-            traceback.print_exception(EG)
-        finally:
-            if self.audio_stream:
-                self.audio_stream.close()
+            print("\nSession cancelled.")
+        except asyncio.ExceptionGroup as eg:
+            print("\nAn error occurred during the session:")
+            traceback.print_exception(eg)
 
+    def run(self):
+        """Main entry point for the class."""
+        print("\n--- Gemini Live on Raspberry Pi ---")
+        input("Press Enter to start the live session...")
+        
+        self._setup_camera()
+        
+        try:
+            asyncio.run(self._start_session())
+        except KeyboardInterrupt:
+            print("\nSession interrupted by user.")
+        finally:
+            self._shutdown()
+
+    def _shutdown(self):
+        """Cleans up all resources."""
+        print("\nShutting down...")
+        if self.audio_stream_in and self.audio_stream_in.is_active():
+            self.audio_stream_in.stop_stream()
+            self.audio_stream_in.close()
+        
+        if self.pya:
+            self.pya.terminate()
+            
+        if self.picam2 and self.picam2.started:
+            self.picam2.stop()
+            print("Camera stopped.")
+        
+        print("Shutdown complete.")
+
+
+def main():
+    """Main function to run the script."""
+    try:
+        live_session = GeminiLiveSession()
+        live_session.run()
+    except Exception as e:
+        print(f"A critical error occurred: {e}")
 
 if __name__ == "__main__":
-    input("Press Enter to start the Gemini Live session...")
+    main()
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default=DEFAULT_MODE,
-        help="pixels to stream from",
-        choices=["camera", "screen", "none"],
-    )
-    args = parser.parse_args()
-    main = AudioLoop(video_mode=args.mode)
-    try:
-        asyncio.run(main.run())
-    except KeyboardInterrupt:
-        print("\nSession ended by user.")
-    finally:
-        pya.terminate()
+
+
